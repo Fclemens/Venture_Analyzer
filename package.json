@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.0.11",
     "@tailwindcss/typography": "^0.5.19",
     "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^12.8.0",

@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { getSettings, saveSettings } from "@/lib/db";
 
 export async function GET() {
   try {
-    const settings = getSettings();
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const settings = getSettings(userId);
     // Mask API keys in response — return only whether they're set
     const masked = {
       ...settings,
@@ -19,8 +22,10 @@ export async function GET() {
 
 export async function PUT(request) {
   try {
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const body = await request.json();
-    const current = getSettings();
+    const current = getSettings(userId);
 
     // Merge carefully — preserve existing API keys if masked value sent
     const merged = {
@@ -39,8 +44,7 @@ export async function PUT(request) {
       ),
     };
 
-    const saved = saveSettings(merged);
-    // Return masked version
+    const saved = saveSettings(userId, merged);
     const masked = {
       ...saved,
       providers: Object.fromEntries(
@@ -56,8 +60,10 @@ export async function PUT(request) {
 // Test connectivity for a provider
 export async function POST(request) {
   try {
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { provider } = await request.json();
-    const settings = getSettings();
+    const settings = getSettings(userId);
     const apiKey = settings.providers[provider]?.apiKey;
     if (!apiKey) return NextResponse.json({ ok: false, error: "No API key configured" });
 

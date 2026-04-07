@@ -1,5 +1,6 @@
 "use client";
-import { Plus, Trash2, FileText, Lightbulb, Layers, Settings } from "lucide-react";
+import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut } from "lucide-react";
+import { useUser, useClerk } from "@clerk/nextjs";
 
 function timeAgo(ts) {
   const diff = Date.now() - ts;
@@ -17,6 +18,9 @@ const STATUS_DOT = {
 };
 
 export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete, onSettings }) {
+  const { user } = useUser();
+  const { signOut } = useClerk();
+
   return (
     <aside className="w-56 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0">
       {/* Logo */}
@@ -47,7 +51,6 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
           <div key={p.id}
             onClick={() => onSelect(p.id)}
             className={`group px-3 py-2.5 cursor-pointer transition-colors flex items-start gap-2.5 ${activeId === p.id ? "bg-blue-50" : "hover:bg-gray-50"}`}>
-            {/* entry mode icon */}
             <div className="flex-shrink-0 mt-0.5">
               {p.entry_mode === "concept"
                 ? <Lightbulb size={12} className={activeId === p.id ? "text-blue-500" : "text-gray-300"} />
@@ -70,12 +73,32 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
         ))}
       </div>
 
-      {/* Settings */}
-      <div className="border-t border-gray-100 px-3 py-2.5">
+      {/* Bottom: settings + user */}
+      <div className="border-t border-gray-100 px-3 py-2">
         <button onClick={onSettings}
-          className="w-full flex items-center gap-2 text-xs text-gray-500 hover:text-gray-800 px-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+          className="w-full flex items-center gap-2 text-xs text-gray-500 hover:text-gray-800 px-2 py-1.5 rounded-lg hover:bg-gray-100 transition-colors mb-1">
           <Settings size={13} /> Settings
         </button>
+
+        {user && (
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 group">
+            {user.imageUrl
+              ? <img src={user.imageUrl} alt="" className="w-5 h-5 rounded-full flex-shrink-0" />
+              : <div className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 text-[9px] font-bold text-gray-500">
+                  {user.firstName?.[0] || user.emailAddresses?.[0]?.emailAddress?.[0]?.toUpperCase() || "?"}
+                </div>
+            }
+            <span className="text-xs text-gray-500 truncate flex-1">
+              {user.firstName || user.emailAddresses?.[0]?.emailAddress}
+            </span>
+            <button
+              onClick={() => signOut({ redirectUrl: "/sign-in" })}
+              title="Sign out"
+              className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-gray-600 transition-all flex-shrink-0">
+              <LogOut size={11} />
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

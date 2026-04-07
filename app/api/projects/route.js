@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { listProjects, createProject } from "@/lib/db";
+import { listProjects, createProject, logEvent } from "@/lib/db";
 import { randomUUID } from "crypto";
 
 export async function GET() {
@@ -24,6 +24,7 @@ export async function POST(request) {
       entryMode: body.entryMode || "document",
       userId,
     });
+    logEvent({ userId, eventType: "project_created" });
     return NextResponse.json(project, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { getSettings } from "@/lib/db";
+import { getSettings, logEvent } from "@/lib/db";
 import { callModel } from "@/lib/llm";
 import {
   METHODOLOGY_REGISTRY,
@@ -43,17 +43,32 @@ export async function POST(request) {
     const { step } = body;
     const settings = getSettings(userId);
 
+    // Logged wrapper — records every LLM call with step + model info
+    async function callModelLogged(args) {
+      const result = await callModel(args, settings);
+      const roleConfig = settings.roles?.[args.role];
+      logEvent({
+        userId,
+        eventType: "pipeline_call",
+        step,
+        model: roleConfig?.model || args.role,
+        inputText:  args.messages?.map(m => typeof m.content === "string" ? m.content : "").join("") || "",
+        outputText: result.text || "",
+      });
+      return result;
+    }
+
     switch (step) {
 
       // ── 1. Extract text from PDF ──────────────────────────────────────────
       case "ingest": {
         const { fileBase64, fileType } = body;
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "fast",
           system: TEXT_EXTRACT_SYSTEM,
           messages: [{ role: "user", content: "Transcribe all text from this document." }],
           file: { base64: fileBase64, mimeType: fileType },
-        }, settings);
+        });
         return NextResponse.json({ text: result.text });
       }
 
@@ -62,20 +77,20 @@ export async function POST(request) {
         const { fileBase64, fileType, fileName, existingChunks = [] } = body;
 
         // Extract text
-        const ingest = await callModel({
+        const ingest = await callModelLogged({
           role: "fast",
           system: TEXT_EXTRACT_SYSTEM,
           messages: [{ role: "user", content: "Transcribe all text from this document." }],
           file: { base64: fileBase64, mimeType: fileType },
-        }, settings);
+        });
         const docText = ingest.text;
 
         // Rechunk into tagged data points
-        const rechunkResult = await callModel({
+        const rechunkResult = await callModelLogged({
           role: "fast",
           system: RECHUNK_SYSTEM,
           messages: [{ role: "user", content: `Additional document: "${fileName}". Extract and tag useful data points.\n\n${docText.slice(0, 15000)}` }],
-        }, settings);
+        });
 
         let rawChunks = [];
         try { rawChunks = parseJSON(rechunkResult.text); } catch { rawChunks = []; }
@@ -99,35 +114,35 @@ export async function POST(request) {
       // ── 2. Entity scan ────────────────────────────────────────────────────
       case "entities": {
         const { corpusText } = body;
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "fast",
           system: ENTITY_SCAN_SYSTEM,
           messages: [{ role: "user", content: `Scan this document for named entities:\n\n${corpusText.slice(0, 8000)}` }],
-        }, settings);
+        });
         return NextResponse.json(parseJSON(result.text));
       }
 
       // ── 3a. P0 from document ──────────────────────────────────────────────
       case "p0_doc": {
         const { fileBase64, fileType, userContext, entities, priorityFocus } = body;
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "smart",
           system: getP0DocSystem(userContext, entities, priorityFocus),
           messages: [{ role: "user", content: "Analyze this pitch deck. Produce the structured JSON classification." }],
           file: { base64: fileBase64, mimeType: fileType },
-        }, settings);
+        });
         return NextResponse.json(parseJSON(result.text));
       }
 
       // ── 3b. P0 from concept (web search) ─────────────────────────────────
       case "p0_concept": {
         const { conceptCard, priorityFocus } = body;
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "smart",
           system: getP0ConceptSystem(conceptCard, priorityFocus),
           messages: [{ role: "user", content: `Analyze this venture concept and produce the structured JSON classification. Use web search to fill gaps.\n\nVENTURE: ${conceptCard.name} — ${conceptCard.description}` }],
           useSearch: true,
-        }, settings);
+        });
         return NextResponse.json(parseJSON(result.text));
       }
 
@@ -145,11 +160,11 @@ export async function POST(request) {
         const context = buildExtractContext(mDef, corpusText, hybridChunks, priorOutputs, methodSummaries || {});
         const header = ventureHeader(ventureCtx);
 
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "fast",
           system: `${header}${getExtractSystem(mDef, entities)}`,
           messages: [{ role: "user", content: `${context}\n\nExtract evidence for "${mDef.name}".` }],
-        }, settings);
+        });
         return NextResponse.json(parseJSON(result.text));
       }
 
@@ -159,12 +174,12 @@ export async function POST(request) {
         const mDef = METHODOLOGY_REGISTRY[methodologyId];
         if (!mDef) return NextResponse.json({ error: "Unknown methodology" }, { status: 400 });
         const header = ventureHeader(ventureCtx);
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "smart",
           system: `${header}${getExecuteSystem(mDef, ventureCtx)}`,
           messages: [{ role: "user", content: `EVIDENCE BUNDLE:\n${JSON.stringify(evidenceBundle, null, 2)}\n\n${userNotes ? `USER NOTES:\n${userNotes}\n\n` : ""}Execute the "${mDef.name}" methodology. Use web search to fill gaps.` }],
           useSearch: true,
-        }, settings);
+        });
         return NextResponse.json({ text: result.text, searchResults: result.searchResults });
       }
 
@@ -179,11 +194,11 @@ export async function POST(request) {
           .slice(0, 40000); // cap total input to fast model
         if (!searchText.trim()) return NextResponse.json([]);
 
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "fast",
           system: RECHUNK_SYSTEM,
           messages: [{ role: "user", content: `Web search results from "${methodologyId}". Extract and tag useful data points.\n\n${searchText}` }],
-        }, settings);
+        });
 
         let chunks = [];
         try { chunks = parseJSON(result.text); } catch { chunks = []; }
@@ -207,11 +222,11 @@ export async function POST(request) {
         const mDef = METHODOLOGY_REGISTRY[methodologyId];
         if (!mDef) return NextResponse.json({ error: "Unknown methodology" }, { status: 400 });
         const header = ventureHeader(ventureCtx);
-        const res = await callModel({
+        const res = await callModelLogged({
           role: "fast",
           system: `${header}${getMethodSummarySystem(mDef, ventureCtx)}`,
           messages: [{ role: "user", content: `Summarise this analysis:\n\n${analysisText}` }],
-        }, settings);
+        });
         return NextResponse.json(parseJSON(res.text));
       }
 
@@ -224,11 +239,11 @@ export async function POST(request) {
             const mDef = METHODOLOGY_REGISTRY[id];
             return `### ${mDef?.name || id}\n\n${text}`;
           }).join("\n\n---\n\n");
-        const res = await callModel({
+        const res = await callModelLogged({
           role: "smart",
           system: `${header}${getPassSummarySystem(passTitle, ventureCtx)}`,
           messages: [{ role: "user", content: `Synthesise the following methodology analyses for pass "${passTitle}":\n\n${combinedResults}` }],
-        }, settings);
+        });
         return NextResponse.json({ passId, ...parseJSON(res.text) });
       }
 
@@ -247,12 +262,12 @@ export async function POST(request) {
           : "";
 
         const header = ventureHeader(ventureCtx);
-        const res = await callModel({
+        const res = await callModelLogged({
           role: "smart",
           system: `${header}${getReviseSystem(mDef, ventureCtx)}`,
           messages: [{ role: "user", content: `PRIOR DRAFT:\n${priorResult}\n\nEVIDENCE BUNDLE:\n${JSON.stringify(evidenceBundle, null, 2)}${newEvidenceSection}\n\n${userNotes ? `USER NOTES:\n${userNotes}\n\n` : ""}Revise the analysis. Use web search if needed.` }],
           useSearch: true,
-        }, settings);
+        });
         return NextResponse.json({ text: res.text, searchResults: res.searchResults });
       }
 
@@ -269,11 +284,11 @@ export async function POST(request) {
         const passSummaryText = passSummary
           ? `\n\nPASS SUMMARY:\nVerdict: ${passSummary.pass_verdict || ""}\nStrongest findings: ${(passSummary.strongest_findings || []).join("; ")}\nKey risks: ${(passSummary.key_risks || []).join("; ")}`
           : "";
-        const res = await callModel({
+        const res = await callModelLogged({
           role: "doc_chapter",
           system: `${header}${getChapterSystem(passDef, ventureCtx)}`,
           messages: [{ role: "user", content: `Write the chapter for "${passTitle}" using these methodology results:${passSummaryText}\n\n${methodsText.slice(0, 30000)}` }],
-        }, settings);
+        });
         return NextResponse.json({ passId, text: res.text });
       }
 
@@ -284,11 +299,11 @@ export async function POST(request) {
         const chaptersText = Object.entries(chapters)
           .map(([passId, text]) => `## ${passId}\n\n${text}`)
           .join("\n\n---\n\n");
-        const res = await callModel({
+        const res = await callModelLogged({
           role: "doc_exec",
           system: `${header}${getExecutiveSystem(ventureCtx)}`,
           messages: [{ role: "user", content: `Synthesise these analytical chapters into the executive summary:\n\n${chaptersText.slice(0, 60000)}` }],
-        }, settings);
+        });
         return NextResponse.json(parseJSON(res.text));
       }
 
@@ -340,12 +355,12 @@ YOUR TASK:
           (corpusText || "").slice(0, 3000),
         ].join("\n");
 
-        const result = await callModel({
+        const result = await callModelLogged({
           role: "smart",
           system: SYSTEM,
           messages: [{ role: "user", content }],
           useSearch: true,
-        }, settings);
+        });
         return NextResponse.json(parseJSON(result.text));
       }
 

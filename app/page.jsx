@@ -132,9 +132,8 @@ export default function Page() {
 
   // ── Setup inputs (not persisted to DB until analysis starts) ──────────────────
   const [entryMode, setEntryMode] = useState("document");
-  const [file, setFile] = useState(null);
-  const [fileBase64, setFileBase64] = useState(null); // never sent to DB
-  const [fileType, setFileType] = useState(null);
+  const [files, setFiles] = useState([]); // [{ file, base64, mimeType }] — first is primary
+  const [dropDragging, setDropDragging] = useState(false);
   const [conceptCard, setConceptCard] = useState({ name: "", description: "", category: "", targetMarket: "", knownCompetitors: [] });
   const [userCtx, setUserCtx] = useState("");
   const [priorityFocus, setPriorityFocus] = useState([]);
@@ -190,17 +189,21 @@ export default function Page() {
   }, []);
 
   // ── File handler ───────────────────────────────────────────────────────────────
-  const handleFile = useCallback((e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setFile(f);
-    const reader = new FileReader();
-    reader.onload = () => {
-      setFileBase64(reader.result.split(",")[1]);
-      const ext = f.name.split(".").pop().toLowerCase();
-      setFileType(ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg");
-    };
-    reader.readAsDataURL(f);
+  const readFiles = useCallback((fileList) => {
+    const accepted = Array.from(fileList).filter(f => /\.(pdf|png|jpg|jpeg)$/i.test(f.name));
+    if (!accepted.length) return;
+    Promise.all(accepted.map(f => new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const ext = f.name.split(".").pop().toLowerCase();
+        resolve({ file: f, base64: reader.result.split(",")[1], mimeType: ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg" });
+      };
+      reader.readAsDataURL(f);
+    }))).then(loaded => setFiles(prev => {
+      // Deduplicate by filename
+      const existing = new Set(prev.map(x => x.file.name));
+      return [...prev, ...loaded.filter(x => !existing.has(x.file.name))];
+    }));
   }, []);
 
   // ── Build methods from P0 result ────────────────────────────────────────────────
@@ -353,7 +356,7 @@ export default function Page() {
   const handleNewProject = useCallback(() => {
     setActiveId(null);
     resetPipeline();
-    setFile(null); setFileBase64(null); setFileType(null);
+    setFiles([]);
     setConceptCard({ name: "", description: "", category: "", targetMarket: "", knownCompetitors: [] });
     setUserCtx(""); setPriorityFocus([]); setPipelineMode("full");
     setScreen("setup");
@@ -369,7 +372,7 @@ export default function Page() {
   // ── START ANALYSIS ──────────────────────────────────────────────────────────────
   const startAnalysis = useCallback(async () => {
     setLoading(true); setError(null); resetPipeline();
-    const name = entryMode === "document" ? (file?.name?.replace(/\.[^.]+$/, "") || "Untitled") : (conceptCard.name || "Untitled");
+    const name = entryMode === "document" ? (files[0]?.file?.name?.replace(/\.[^.]+$/, "") || "Untitled") : (conceptCard.name || "Untitled");
 
     try {
       // Create project in DB
@@ -386,10 +389,15 @@ export default function Page() {
       let ents = {};
 
       if (entryMode === "document") {
-        // Step 1: extract text
-        setLoadingMsg("Reading document…");
-        const ingest = await pipeline("ingest", { fileBase64, fileType });
-        docText = ingest.text;
+        // Step 1: ingest all files — primary first, then additional
+        setLoadingMsg(`Reading ${files.length > 1 ? `${files.length} documents` : "document"}…`);
+        const ingestResults = await Promise.all(
+          files.map(f => pipeline("ingest", { fileBase64: f.base64, fileType: f.mimeType }))
+        );
+        // Concatenate all text, separated by a clear divider
+        docText = ingestResults.map((r, i) => (
+          files.length > 1 ? `=== ${files[i].file.name} ===\n${r.text}` : r.text
+        )).join("\n\n");
         setCorpusText(docText);
 
         // Step 2: entity scan
@@ -397,17 +405,18 @@ export default function Page() {
         ents = await pipeline("entities", { corpusText: docText });
         setEntities(ents);
 
-        // Add doc as source
-        setSources([{ id: crypto.randomUUID(), type: "document", name: file.name, rawText: docText, entities: ents, addedAt: new Date().toISOString() }]);
+        // Add all files as sources
+        const initialSources = files.map(f => ({ id: crypto.randomUUID(), type: "document", name: f.file.name, rawText: "", entities: ents, addedAt: new Date().toISOString() }));
+        setSources(initialSources);
 
-        // Step 3: P0 classification
+        // Step 3: P0 classification — uses primary (first) file for vision + full corpus text
         setLoadingMsg("Classifying venture…");
-        const p0Result = await pipeline("p0_doc", { fileBase64, fileType, userContext: userCtx, entities: ents, priorityFocus });
+        const p0Result = await pipeline("p0_doc", { fileBase64: files[0].base64, fileType: files[0].mimeType, userContext: userCtx, entities: ents, priorityFocus });
         setP0(p0Result);
         const built = buildMethods(p0Result, priorityFocus, pipelineMode);
         setMethods(built);
 
-        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: [{ id: crypto.randomUUID(), type: "document", name: file.name, addedAt: new Date().toISOString() }] });
+        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources });
         await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running" }) });
 
       } else {
@@ -434,7 +443,7 @@ export default function Page() {
       setError(err.message);
     }
     setLoading(false);
-  }, [entryMode, file, fileBase64, fileType, conceptCard, userCtx, priorityFocus, pipelineMode, buildMethods, resetPipeline, saveState]);
+  }, [entryMode, files, conceptCard, userCtx, priorityFocus, pipelineMode, buildMethods, resetPipeline, saveState]);
 
   // ── EXTRACT ─────────────────────────────────────────────────────────────────────
   const runExtract = useCallback(async (methodId) => {
@@ -819,7 +828,7 @@ ${passChapters}
 
   const totalDone = useMemo(() => Object.values(methodStatus).filter(s => s === "done").length, [methodStatus]);
   const totalActive = useMemo(() => methods.filter(m => m.decision !== "skip").length, [methods]);
-  const canStart = entryMode === "document" ? !!fileBase64 : (!!conceptCard.name && !!conceptCard.description);
+  const canStart = entryMode === "document" ? files.length > 0 : (!!conceptCard.name && !!conceptCard.description);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER
@@ -856,18 +865,35 @@ ${passChapters}
                 {/* Document mode */}
                 {entryMode === "document" && (
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">Pitch deck</label>
-                    <div onClick={() => fileRef.current?.click()}
-                      className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-blue-300 hover:bg-blue-50/20 transition-all">
-                      {file ? (
-                        <div className="flex items-center justify-center gap-2">
-                          <FileText size={15} className="text-blue-600" />
-                          <span className="text-sm font-medium text-gray-800">{file.name}</span>
-                          <span className="text-xs text-gray-400">({(file.size/1024/1024).toFixed(1)} MB)</span>
-                        </div>
-                      ) : <><Upload size={18} className="mx-auto text-gray-300 mb-1.5" /><p className="text-sm text-gray-400">Drop PDF or click</p></>}
+                    <label className="block text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">Documents</label>
+                    {/* Drop zone */}
+                    <div
+                      onClick={() => fileRef.current?.click()}
+                      onDragOver={e => { e.preventDefault(); setDropDragging(true); }}
+                      onDragEnter={e => { e.preventDefault(); setDropDragging(true); }}
+                      onDragLeave={e => { e.preventDefault(); setDropDragging(false); }}
+                      onDrop={e => { e.preventDefault(); setDropDragging(false); readFiles(e.dataTransfer.files); }}
+                      className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${dropDragging ? "border-blue-400 bg-blue-50/40" : "border-gray-200 hover:border-blue-300 hover:bg-blue-50/20"}`}>
+                      <Upload size={18} className={`mx-auto mb-1.5 ${dropDragging ? "text-blue-400" : "text-gray-300"}`} />
+                      <p className="text-sm text-gray-400">{dropDragging ? "Drop to add" : "Drop files or click to browse"}</p>
+                      <p className="text-xs text-gray-300 mt-0.5">PDF · PNG · JPG — multiple files supported</p>
                     </div>
-                    <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={handleFile} className="hidden" />
+                    <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg" multiple onChange={e => readFiles(e.target.files)} className="hidden" />
+                    {/* File list */}
+                    {files.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {files.map((f, i) => (
+                          <li key={f.file.name} className="flex items-center gap-2 text-xs bg-gray-50 border border-gray-100 rounded-lg px-3 py-1.5">
+                            <FileText size={12} className={i === 0 ? "text-blue-500 flex-shrink-0" : "text-gray-300 flex-shrink-0"} />
+                            <span className="truncate flex-1 text-gray-700">{f.file.name}</span>
+                            {i === 0 && <span className="text-[10px] text-blue-400 font-medium flex-shrink-0">primary</span>}
+                            <span className="text-gray-300 flex-shrink-0">{(f.file.size/1024/1024).toFixed(1)} MB</span>
+                            <button onClick={e => { e.stopPropagation(); setFiles(prev => prev.filter((_, j) => j !== i)); }}
+                              className="text-gray-300 hover:text-red-400 flex-shrink-0 transition-colors"><X size={11} /></button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
 

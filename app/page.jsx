@@ -416,8 +416,10 @@ export default function Page() {
         const built = buildMethods(p0Result, priorityFocus, pipelineMode);
         setMethods(built);
 
+        const projectName = p0Result.venture_name || name;
         await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources });
-        await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running" }) });
+        await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running", name: projectName }) });
+        setProjects(prev => prev.map(p => p.id === project.id ? { ...p, name: projectName } : p));
 
       } else {
         // Concept-first: entity from card
@@ -433,8 +435,10 @@ export default function Page() {
         const built = buildMethods(p0Result, priorityFocus, pipelineMode);
         setMethods(built);
 
+        const projectName = p0Result.venture_name || name;
         await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built });
-        await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running", name }) });
+        await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running", name: projectName }) });
+        setProjects(prev => prev.map(p => p.id === project.id ? { ...p, name: projectName } : p));
       }
 
       setScreen("pipeline");

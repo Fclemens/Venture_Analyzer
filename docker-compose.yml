@@ -1,0 +1,34 @@
+services:
+  venture-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+
+    # ── Environment variables ──────────────────────────────────────────────────
+    # Copy .env.local.example → .env.local and fill in your keys.
+    # For production deployments prefer injecting secrets via your host/CI
+    # instead of committing .env.local.
+    env_file:
+      - .env.local
+
+    # ── Persistent volumes ─────────────────────────────────────────────────────
+    volumes:
+      # SQLite databases (projects, settings, usage events)
+      - venture_data:/app/.data
+      # @xenova/transformers model cache — avoids re-downloading on restart
+      - venture_cache:/app/.cache
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health 2>/dev/null || wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  venture_data:
+  venture_cache:

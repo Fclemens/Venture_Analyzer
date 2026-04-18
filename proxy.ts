@@ -5,6 +5,7 @@ const isPublicRoute = createRouteMatcher([
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/api/webhooks/clerk(.*)",
+  "/api/health",
 ]);
 
 // Admin-only routes — require role=admin in Clerk public metadata

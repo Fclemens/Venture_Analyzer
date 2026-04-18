@@ -816,6 +816,118 @@ ${passChapters}
     a.click();
   }, [docState, p0]);
 
+  // ── Print / Save as PDF ───────────────────────────────────────────────────────
+  // Opens the same HTML report in a new tab and auto-triggers the browser print
+  // dialog. The user picks "Save as PDF" for a clean, vector-quality export.
+  const printAsPDF = useCallback(() => {
+    const { chapters, execSummary } = docState;
+    if (!execSummary) return;
+    const passChapters = PASS_DEFS.slice(1)
+      .filter(pd => chapters[pd.id])
+      .map(pd => `
+<section class="chapter">
+  <div class="chapter-header"><span class="chapter-num">P${pd.num}</span><h2>${pd.title}</h2></div>
+  <div class="chapter-body">${mdToHtml(chapters[pd.id])}</div>
+</section>`).join('\n');
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Venture Analysis — ${p0?.venture_name || 'Report'}</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:Georgia,serif;max-width:900px;margin:0 auto;padding:56px 48px;color:#111;line-height:1.75;font-size:15px}
+  h1{font-size:2.2em;margin:0 0 6px;letter-spacing:-.02em}
+  h2{font-size:1.2em;margin:40px 0 10px;border-bottom:1px solid #e0e0e0;padding-bottom:6px;color:#111;font-weight:700}
+  h3{font-size:.95em;font-weight:700;margin:24px 0 6px;color:#222}
+  h4{font-size:.88em;font-weight:700;margin:16px 0 4px;color:#444;text-transform:uppercase;letter-spacing:.05em}
+  p{margin:8px 0 12px;color:#333}
+  ul,ol{padding-left:1.5em;margin:8px 0 12px}
+  li{margin-bottom:5px;color:#333}
+  code{background:#f4f4f2;padding:2px 5px;border-radius:3px;font-size:.88em;font-family:monospace}
+  hr{border:none;border-top:1px solid #e8e8e8;margin:24px 0}
+  strong{color:#111}
+  .meta{color:#777;font-size:.83em;margin:0 0 48px;letter-spacing:.01em}
+  .exec{background:#f9f8f5;border-left:4px solid #111;padding:28px 32px;margin:36px 0;border-radius:0 10px 10px 0}
+  .exec-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
+  .verdict{display:inline-block;padding:5px 13px;border-radius:20px;font-weight:700;font-size:.8em;background:#111;color:#fff;letter-spacing:.04em}
+  .score{font-size:2.4em;font-weight:800;color:#111;line-height:1}
+  .exec h2{margin-top:8px;border:none;padding:0;font-size:1.1em}
+  .thesis{font-style:italic;color:#555;border-left:3px solid #ccc;padding-left:14px;margin:12px 0 16px;font-size:.94em}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:32px 0}
+  .findings-box,.risks-box{padding:20px 24px;border-radius:10px}
+  .findings-box{background:#f0faf4;border:1px solid #b8e8c8}
+  .risks-box{background:#fdf4f4;border:1px solid #f0c0c0}
+  .findings-box h3,.risks-box h3{margin-top:0;font-size:.8em;text-transform:uppercase;letter-spacing:.06em}
+  .findings-box h3{color:#1a7a40}
+  .risks-box h3{color:#b03030}
+  .findings-box li{color:#1a5c30;font-size:.9em}
+  .risks-box li{color:#8c2424;font-size:.9em}
+  .recommendation{background:#111;color:#fff;padding:24px 28px;border-radius:10px;margin:32px 0}
+  .recommendation h2{color:#ccc;border:none;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px}
+  .recommendation p{color:#eee;font-size:.95em;margin:0}
+  .recommendation em{color:#aaa;font-size:.85em;display:block;margin-bottom:8px}
+  .chapter{margin:56px 0;padding-top:4px}
+  .chapter-header{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;border-bottom:2px solid #111;padding-bottom:10px}
+  .chapter-num{font-size:.75em;font-weight:800;color:#fff;background:#111;padding:3px 9px;border-radius:4px;letter-spacing:.04em;flex-shrink:0}
+  .chapter-header h2{margin:0;border:none;padding:0;font-size:1.25em;font-weight:700}
+  .chapter-body{color:#333;font-size:.94em;line-height:1.78}
+  .chapter-body h2{font-size:1.05em;margin:28px 0 8px;border-bottom:1px solid #ececec;padding-bottom:5px;color:#111}
+  .chapter-body h3{font-size:.9em;font-weight:700;margin:20px 0 5px;color:#222}
+  .chapter-body h4{font-size:.8em;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#555;margin:14px 0 4px}
+  .chapter-body p{margin:6px 0 10px}
+  .chapter-body ul,.chapter-body ol{margin:6px 0 10px}
+  .chapter-body hr{margin:16px 0}
+  @media print{
+    body{padding:24px 32px;font-size:13px}
+    .chapter{page-break-before:always}
+    .two-col{grid-template-columns:1fr 1fr}
+    @page{margin:20mm 18mm;size:A4}
+  }
+</style>
+</head>
+<body>
+<h1>${p0?.venture_name || 'Venture Analysis'}</h1>
+<p class="meta">${new Date().toLocaleDateString('en-GB', {day:'numeric',month:'long',year:'numeric'})} &nbsp;·&nbsp; ${p0?.classification?.business_model?.toUpperCase() || ''} &nbsp;·&nbsp; ${p0?.stage || ''} &nbsp;·&nbsp; ${Object.keys(chapters).length} passes analysed</p>
+
+<div class="exec">
+  <div class="exec-top">
+    <div>
+      <div class="verdict">${execSummary.verdict || ''}</div>
+      <h2>Executive Summary</h2>
+    </div>
+    <div class="score">${execSummary.score || ''}</div>
+  </div>
+  ${execSummary.investment_thesis ? `<p class="thesis">${execSummary.investment_thesis}</p>` : ''}
+  ${execSummary.executive_summary ? `<div>${mdToHtml(execSummary.executive_summary)}</div>` : ''}
+</div>
+
+${(execSummary.strongest_findings?.length || execSummary.key_risks?.length) ? `
+<div class="two-col">
+  ${execSummary.strongest_findings?.length ? `<div class="findings-box"><h3>Key Findings</h3><ul>${execSummary.strongest_findings.map(f=>`<li>${f}</li>`).join('')}</ul></div>` : '<div></div>'}
+  ${execSummary.key_risks?.length ? `<div class="risks-box"><h3>Key Risks</h3><ul>${execSummary.key_risks.map(r=>`<li>${r}</li>`).join('')}</ul></div>` : '<div></div>'}
+</div>` : ''}
+
+${execSummary.recommendation ? `<div class="recommendation"><h2>Recommendation</h2>${execSummary.score_rationale ? `<em>${execSummary.score_rationale}</em>` : ''}<p>${execSummary.recommendation}</p></div>` : ''}
+
+${passChapters}
+
+<script>
+  // Auto-trigger print dialog when loaded — user selects "Save as PDF"
+  window.addEventListener('load', function() {
+    setTimeout(function() { window.print(); }, 400);
+  });
+<\/script>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }, [docState, p0]);
+
   const compileDoc = useCallback(() => {
     let doc = `# Venture Analysis: ${p0?.venture_name || "Unknown"}\n\n*Generated ${new Date().toLocaleDateString()} · ${entryMode} mode · ${pipelineMode} pipeline*\n\n`;
     doc += `## Executive summary\n\n${p0?.venture_summary || ""}\n\n`;
@@ -1066,8 +1178,12 @@ ${passChapters}
                         <RotateCcw size={13} /> Regenerate
                       </button>
                       <button onClick={downloadHTML}
+                        className="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50 flex items-center gap-1.5">
+                        <Download size={13} /> HTML
+                      </button>
+                      <button onClick={printAsPDF}
                         className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-1.5">
-                        <Download size={13} /> Download HTML
+                        <Download size={13} /> Save as PDF
                       </button>
                     </>
                   )}

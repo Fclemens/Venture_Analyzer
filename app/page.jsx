@@ -11,6 +11,8 @@ import Sidebar from "@/components/Sidebar";
 import SettingsPanel from "@/components/SettingsPanel";
 import MethodCard from "@/components/MethodCard";
 import PassSummaryCard from "@/components/PassSummaryCard";
+import PipelineStepper from "@/components/PipelineStepper";
+import { useToast } from "@/components/Toast";
 import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/lib/constants";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 
@@ -157,6 +159,9 @@ export default function Page() {
   const [chunks, setChunks] = useState([]);
   const [activePass, setActivePass] = useState("p0");
 
+  // ── Toast ──────────────────────────────────────────────────────────────────────
+  const toast = useToast();
+
   // ── Competitor validation ─────────────────────────────────────────────────────
   const [competitorValidating, setCompetitorValidating] = useState(false);
   const [competitorValidationNote, setCompetitorValidationNote] = useState(null); // transient note after validation
@@ -266,9 +271,11 @@ export default function Page() {
       const addedCount = (result.added || []).length;
       const note = result.notes || `Removed ${removedCount} non-competitor entries, added ${addedCount} discovered competitors.`;
       setCompetitorValidationNote(note);
+      toast.success(note, 7000);
       setTimeout(() => setCompetitorValidationNote(null), 8000);
     } catch (e) {
       setCompetitorValidationNote(`Validation failed: ${e.message}`);
+      toast.error(`Validation failed: ${e.message}`);
       setTimeout(() => setCompetitorValidationNote(null), 5000);
     }
     setCompetitorValidating(false);
@@ -463,7 +470,7 @@ export default function Page() {
       setMethodStatus(p => ({ ...p, [methodId]: "extracted" }));
       await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: { ...methodStatus, [methodId]: "extracted" }, evidenceBundles: eb, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks });
     } catch (err) {
-      setError(`Extract failed (${methodId}): ${err.message}`);
+      toast.error(`Extract failed (${methodId}): ${err.message}`);
       setMethodStatus(p => ({ ...p, [methodId]: "error" }));
     }
     setMethodLoading(p => ({ ...p, [methodId]: false }));
@@ -526,7 +533,7 @@ export default function Page() {
 
       await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: newStatus, evidenceBundles, methodResults: mr, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources: newSources, chunks: newChunks });
     } catch (err) {
-      setError(`Execute failed (${methodId}): ${err.message}`);
+      toast.error(`Execute failed (${methodId}): ${err.message}`);
       setMethodStatus(p => ({ ...p, [methodId]: "error" }));
     }
     setMethodLoading(p => ({ ...p, [methodId]: false }));
@@ -635,7 +642,7 @@ export default function Page() {
       setMethodSummaries(prev => { newMethodSummaries = { ...prev }; delete newMethodSummaries[methodId]; return newMethodSummaries; });
       await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: newStatus, evidenceBundles, methodResults: mr, methodNotes, methodSummaries: newMethodSummaries, passSummaries, passSummaryStale: { ...passSummaryStale, [method?.pass]: true }, sources: newSources, chunks: newChunks });
     } catch (err) {
-      setError(`Revise failed (${methodId}): ${err.message}`);
+      toast.error(`Revise failed (${methodId}): ${err.message}`);
       setMethodStatus(p => ({ ...p, [methodId]: "error" }));
     }
     setMethodLoading(p => ({ ...p, [methodId]: false }));
@@ -691,7 +698,8 @@ export default function Page() {
 
       // Executive summary last — sees all chapters
       const execSummary = await pipeline("compile_exec", { chapters, ventureCtx });
-      setDocState({ chapters, execSummary, generating: false, progress: "" });
+      const snapshotCount = Object.keys(methodResults).length;
+      setDocState({ chapters, execSummary, generating: false, progress: "", snapshotCount });
       // Persist so it survives page reload
       await saveState(activeId, {
         corpusText, entities, p0, methods, methodStatus, evidenceBundles,
@@ -699,7 +707,7 @@ export default function Page() {
         sources, chunks, docChapters: chapters, docExecSummary: execSummary,
       });
     } catch (err) {
-      setError(`Document generation failed: ${err.message}`);
+      toast.error(`Document generation failed: ${err.message}`);
       setDocState(s => ({ ...s, generating: false, progress: "" }));
     }
   }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodStatus, evidenceBundles, methodNotes, methodSummaries, passSummaryStale, sources, chunks, saveState]);
@@ -834,12 +842,43 @@ ${passChapters}
   const totalActive = useMemo(() => methods.filter(m => m.decision !== "skip").length, [methods]);
   const canStart = entryMode === "document" ? files.length > 0 : (!!conceptCard.name && !!conceptCard.description);
 
+  // ── Keyboard shortcuts (pipeline screen only) ──────────────────────────────
+  useEffect(() => {
+    if (screen !== "pipeline") return;
+    const allPasses = ["p0", "sources", ...passGroups.slice(1).map(pg => pg.id)];
+    const handler = (e) => {
+      // Don't fire when user is typing in an input / textarea
+      const tag = e.target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+      const idx = allPasses.indexOf(activePass);
+      if ((e.key === "j" || e.key === "ArrowDown") && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        if (idx < allPasses.length - 1) setActivePass(allPasses[idx + 1]);
+      } else if ((e.key === "k" || e.key === "ArrowUp") && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        if (idx > 0) setActivePass(allPasses[idx - 1]);
+      } else if (e.key === "Escape") {
+        setError(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [screen, activePass, passGroups]);
+
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
-      <Sidebar projects={projects} activeId={activeId} onSelect={handleSelectProject} onNew={handleNewProject} onDelete={handleDeleteProject} onSettings={() => setSettingsOpen(true)} />
+      <Sidebar
+        projects={projects}
+        activeId={activeId}
+        onSelect={handleSelectProject}
+        onNew={handleNewProject}
+        onDelete={handleDeleteProject}
+        onSettings={() => setSettingsOpen(true)}
+        activeProgress={activeId ? { done: totalDone, total: totalActive } : null}
+      />
 
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -981,8 +1020,33 @@ ${passChapters}
 
         {/* ── OUTPUT SCREEN ── */}
         {screen === "output" && (
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
-            <div className="max-w-3xl mx-auto">
+          <div className="flex-1 overflow-y-auto p-6 bg-gray-50" id="doc-scroll-root">
+            <div className="flex gap-6 max-w-5xl mx-auto">
+
+              {/* ── Sticky chapter outline (xl screens only) ── */}
+              {docState.execSummary && !docState.generating && (
+                <nav className="hidden xl:flex flex-col gap-0.5 w-36 flex-shrink-0 sticky top-0 self-start pt-0.5">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2">Outline</p>
+                  <button
+                    onClick={() => document.getElementById("doc-sec-exec")?.scrollIntoView({ behavior: "smooth" })}
+                    className="text-left text-xs text-gray-500 hover:text-gray-900 py-1 px-2 rounded-lg hover:bg-white transition-colors truncate"
+                  >
+                    Executive Summary
+                  </button>
+                  {PASS_DEFS.slice(1).filter(pd => docState.chapters[pd.id]).map(pd => (
+                    <button
+                      key={pd.id}
+                      onClick={() => document.getElementById(`doc-sec-${pd.id}`)?.scrollIntoView({ behavior: "smooth" })}
+                      className="text-left text-xs text-gray-500 hover:text-gray-900 py-1 px-2 rounded-lg hover:bg-white transition-colors truncate"
+                    >
+                      P{pd.num} · {pd.title}
+                    </button>
+                  ))}
+                </nav>
+              )}
+
+              {/* ── Main content ── */}
+              <div className="flex-1 min-w-0 max-w-3xl">
               {/* Toolbar */}
               <div className="flex items-center justify-between mb-6">
                 <button onClick={() => setScreen("pipeline")} className="text-sm text-gray-500 hover:text-gray-800 flex items-center gap-1">
@@ -1056,7 +1120,7 @@ ${passChapters}
                     </div>
 
                     {/* Executive summary */}
-                    <div className="bg-white rounded-2xl border border-gray-200 p-6">
+                    <div id="doc-sec-exec" className="bg-white rounded-2xl border border-gray-200 p-6">
                       <h2 className="text-base font-semibold text-gray-900 mb-3">Executive Summary</h2>
                       {execSummary.investment_thesis && (
                         <p className="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 mb-4">{execSummary.investment_thesis}</p>
@@ -1126,7 +1190,7 @@ ${passChapters}
 
                     {/* Chapters */}
                     {PASS_DEFS.slice(1).filter(pd => chapters[pd.id]).map(pd => (
-                      <div key={pd.id} className="bg-white rounded-2xl border border-gray-200 p-6">
+                      <div key={pd.id} id={`doc-sec-${pd.id}`} className="bg-white rounded-2xl border border-gray-200 p-6">
                         <h2 className="text-base font-semibold text-gray-900 mb-4">P{pd.num} · {pd.title}</h2>
                         <div className="prose prose-sm max-w-none
                           prose-headings:font-semibold prose-headings:text-gray-900
@@ -1142,7 +1206,8 @@ ${passChapters}
                   </div>
                 );
               })()}
-            </div>
+              </div>{/* /main content */}
+            </div>{/* /flex row */}
           </div>
         )}
 
@@ -1151,19 +1216,41 @@ ${passChapters}
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Top bar */}
             <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center justify-between flex-shrink-0">
-              <div>
-                <span className="text-sm font-semibold text-gray-900">{p0?.venture_name || "Analysis"}</span>
-                <span className="text-xs text-gray-400 ml-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-sm font-semibold text-gray-900 truncate">{p0?.venture_name || "Analysis"}</span>
+                <span className="text-xs text-gray-400 hidden sm:inline">
                   {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunks.length} web chunks · {totalDone}/{totalActive}
                 </span>
+                {/* Stale document badge */}
+                {docState.execSummary && Object.keys(methodResults).length > (docState.snapshotCount || 0) && (
+                  <button
+                    onClick={() => setScreen("output")}
+                    title="New results since last generation — click to regenerate"
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-full hover:bg-amber-100 transition-colors flex-shrink-0"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    Document out of date
+                  </button>
+                )}
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-shrink-0">
                 <button onClick={() => setScreen("setup")} className="text-xs text-gray-400 hover:text-gray-700 px-2 py-1">← New</button>
                 <button onClick={() => setScreen("output")} className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-lg hover:bg-gray-700 flex items-center gap-1">
                   <FileText size={11} /> Document
                 </button>
               </div>
             </div>
+
+            {/* Pipeline stepper — spans full width below top bar */}
+            <PipelineStepper
+              passGroups={passGroups}
+              activePass={activePass}
+              p0Done={!!p0}
+              onSelectPass={(id) => {
+                if (id === "__document__") setScreen("output");
+                else setActivePass(id);
+              }}
+            />
 
             <div className="flex-1 flex overflow-hidden">
               {/* Pass sidebar */}
@@ -1375,6 +1462,30 @@ ${passChapters}
                         )}
                       </div>
                     </div>
+
+                    {/* ── Competitors section ── */}
+                    {entities?.competitors?.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                            Competitors · {entities.competitors.length}
+                          </p>
+                          <button
+                            onClick={() => setActivePass("p0")}
+                            className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                          >
+                            Edit in P0 →
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {entities.competitors.map((c, i) => (
+                            <span key={i} className="inline-flex items-center text-xs bg-red-50 text-red-700 border border-red-100 px-2.5 py-1 rounded-full font-medium">
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* ── Web chunks section ── */}
                     <div>

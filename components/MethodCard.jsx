@@ -1,67 +1,180 @@
 "use client";
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Check, RotateCcw, Loader, Filter, Zap, Database, Pencil, AlertTriangle, Sparkles } from "lucide-react";
+import {
+  ChevronDown, ChevronRight, Check, RotateCcw, Loader, Filter, Zap,
+  Database, Pencil, AlertTriangle, Sparkles, MoreHorizontal,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 function Badge({ type, children }) {
-  const s = { pending:"bg-gray-100 text-gray-500", extracting:"bg-violet-50 text-violet-700", executing:"bg-blue-50 text-blue-700", extracted:"bg-violet-100 text-violet-800", review:"bg-amber-50 text-amber-700", done:"bg-emerald-50 text-emerald-700", error:"bg-red-50 text-red-600", skip:"bg-gray-100 text-gray-400", run:"bg-emerald-50 text-emerald-700", lite:"bg-amber-50 text-amber-700", fast:"bg-purple-50 text-purple-600", smart:"bg-blue-50 text-blue-600" };
-  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${s[type] || s.pending}`}>{children || type}</span>;
+  const s = {
+    pending:    "bg-gray-100 text-gray-500",
+    extracting: "bg-violet-50 text-violet-700",
+    executing:  "bg-blue-50 text-blue-700",
+    extracted:  "bg-violet-100 text-violet-800",
+    review:     "bg-amber-50 text-amber-700",
+    done:       "bg-emerald-50 text-emerald-700",
+    error:      "bg-red-50 text-red-600",
+    skip:       "bg-gray-100 text-gray-400",
+    run:        "bg-emerald-50 text-emerald-700",
+    lite:       "bg-amber-50 text-amber-700",
+    fast:       "bg-purple-50 text-purple-600",
+    smart:      "bg-blue-50 text-blue-600",
+  };
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${s[type] || s.pending}`}>
+      {children || type}
+    </span>
+  );
 }
 
 function cleanMarkdown(text) {
   if (!text) return "";
-  return text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/\n[ \t]+\n/g, "\n\n").replace(/([^\n])\n(?![\n#>*\-|`\d])/g, "$1 ").trim();
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\n[ \t]+\n/g, "\n\n")
+    .replace(/([^\n])\n(?![\n#>*\-|`\d])/g, "$1 ")
+    .trim();
 }
 
 const CONFIDENCE_COLORS = { high: "bg-emerald-400", medium: "bg-amber-400", low: "bg-red-400" };
 
-export default function MethodCard({ method, status, evidence, result, summary, notes, loading, onRunExtract, onRunExecute, onApprove, onRerun, onRevise, onSummarise, onToggle, onNotesChange }) {
-  const [expanded, setExpanded] = useState(false);
+/** Primary CTA config per status */
+function getPrimaryAction(status, loading, handlers) {
+  switch (status) {
+    case undefined:
+    case null:
+    case "pending":
+    case "error":
+      return {
+        label: "Extract",
+        icon: <Filter size={12} />,
+        className: "bg-violet-600 hover:bg-violet-700 text-white",
+        onClick: handlers.onRunExtract,
+      };
+    case "extracted":
+      return {
+        label: "Execute",
+        icon: <Zap size={12} />,
+        className: "bg-blue-600 hover:bg-blue-700 text-white",
+        onClick: handlers.onRunExecute,
+      };
+    case "extracting":
+    case "executing":
+      return {
+        label: status === "extracting" ? "Extracting…" : "Executing…",
+        icon: <Loader size={12} className="animate-spin" />,
+        className: "bg-gray-200 text-gray-500 cursor-not-allowed",
+        onClick: null,
+      };
+    case "review":
+      return {
+        label: "Approve",
+        icon: <Check size={12} />,
+        className: "bg-emerald-600 hover:bg-emerald-700 text-white",
+        onClick: handlers.onApprove,
+      };
+    case "done":
+      return null; // no primary action when done — use secondary actions
+    default:
+      return null;
+  }
+}
+
+export default function MethodCard({
+  method, status, evidence, result, summary, notes, loading,
+  onRunExtract, onRunExecute, onApprove, onRerun, onRevise, onSummarise, onToggle, onNotesChange,
+}) {
+  const [expanded, setExpanded]         = useState(false);
   const [showFullAnalysis, setShowFullAnalysis] = useState(false);
+  const [showSecondary, setShowSecondary] = useState(false);
   const isSkipped = method.decision === "skip";
 
+  const primary = getPrimaryAction(status, loading, { onRunExtract, onRunExecute, onApprove });
+
+  // Border / bg colour by status
+  const cardBorder = isSkipped
+    ? "border-gray-100 opacity-40"
+    : status === "review"
+      ? "border-amber-200 bg-amber-50/20"
+      : status === "done"
+        ? "border-emerald-200 bg-emerald-50/10"
+        : status === "error"
+          ? "border-red-200 bg-red-50/10"
+          : "border-gray-200 bg-white";
+
   return (
-    <div className={`border rounded-xl mb-2 transition-all ${isSkipped ? "border-gray-100 opacity-40" : status === "review" ? "border-amber-200 bg-amber-50/20" : status === "done" ? "border-emerald-200 bg-emerald-50/10" : "border-gray-200 bg-white"}`}>
-      {/* Header row */}
-      <div className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none" onClick={() => !isSkipped && setExpanded(e => !e)}>
-        {!isSkipped && (expanded ? <ChevronDown size={13} className="text-gray-400 flex-shrink-0" /> : <ChevronRight size={13} className="text-gray-400 flex-shrink-0" />)}
-        <span className="text-xs font-mono text-gray-400 w-5 flex-shrink-0">{method.pass?.toUpperCase()}</span>
-        <span className={`text-sm flex-1 min-w-0 truncate ${isSkipped ? "line-through text-gray-400" : "text-gray-800 font-medium"}`}>{method.name}</span>
+    <div className={`border rounded-xl mb-2 transition-all ${cardBorder}`}>
+      {/* ── Header row ── */}
+      <div
+        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none"
+        onClick={() => !isSkipped && setExpanded(e => !e)}
+      >
+        {!isSkipped && (
+          expanded
+            ? <ChevronDown  size={13} className="text-gray-400 flex-shrink-0" />
+            : <ChevronRight size={13} className="text-gray-400 flex-shrink-0" />
+        )}
+
+        <span className="text-xs font-mono text-gray-400 w-5 flex-shrink-0">
+          {method.pass?.toUpperCase()}
+        </span>
+
+        <span className={`text-sm flex-1 min-w-0 truncate ${isSkipped ? "line-through text-gray-400" : "text-gray-800 font-medium"}`}>
+          {method.name}
+        </span>
+
         {/* One-liner preview when done and collapsed */}
         {status === "done" && !expanded && summary?.one_liner && (
-          <span className="text-xs text-gray-400 italic truncate max-w-xs hidden lg:block">{summary.one_liner}</span>
+          <span className="text-xs text-gray-400 italic truncate max-w-xs hidden lg:block">
+            {summary.one_liner}
+          </span>
         )}
-        <button onClick={e => { e.stopPropagation(); onToggle(); }}
-          className={`text-xs px-2 py-0.5 rounded-full border transition-colors flex-shrink-0 ${method.decision === "run" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : method.decision === "lite" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-gray-100 text-gray-400 border-gray-200"}`}>
+
+        {/* Status badge (compact) */}
+        {status && status !== "pending" && !isSkipped && (
+          <Badge type={status}>{status}</Badge>
+        )}
+
+        {/* Decision toggle */}
+        <button
+          onClick={e => { e.stopPropagation(); onToggle(); }}
+          className={`text-xs px-2 py-0.5 rounded-full border transition-colors flex-shrink-0 ${
+            method.decision === "run"  ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+            method.decision === "lite" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                                         "bg-gray-100 text-gray-400 border-gray-200"
+          }`}
+        >
           {method.decision}
         </button>
-        {status && status !== "pending" && !isSkipped && <Badge type={status}>{status}</Badge>}
       </div>
 
+      {/* ── Expanded body ── */}
       {expanded && !isSkipped && (
         <div className="px-3 pb-3 border-t border-gray-100 space-y-2.5 pt-2.5">
-          {/* Meta */}
+          {/* Meta row */}
           <div className="flex items-center gap-1.5 flex-wrap">
             <Badge type="fast">Fast: extract</Badge>
             <Badge type="smart">Smart: execute</Badge>
             <span className="text-xs text-gray-400">· {method.entity_filter?.join(", ")}</span>
           </div>
-          {method.reason && <p className="text-xs text-gray-500 italic">{method.reason}</p>}
+          {method.reason && (
+            <p className="text-xs text-gray-500 italic">{method.reason}</p>
+          )}
 
-          {/* ── Method summary (shown when done, before full analysis) ── */}
+          {/* ── Method summary (when done) ── */}
           {summary && (
             <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-emerald-800">Key insights</span>
-                <div className="flex items-center gap-2">
-                  {summary.confidence && (
-                    <div className="flex items-center gap-1">
-                      <div className={`w-1.5 h-1.5 rounded-full ${CONFIDENCE_COLORS[summary.confidence] || "bg-gray-300"}`} />
-                      <span className="text-xs text-emerald-600">{summary.confidence}</span>
-                    </div>
-                  )}
-                </div>
+                {summary.confidence && (
+                  <div className="flex items-center gap-1">
+                    <div className={`w-1.5 h-1.5 rounded-full ${CONFIDENCE_COLORS[summary.confidence] || "bg-gray-300"}`} />
+                    <span className="text-xs text-emerald-600">{summary.confidence}</span>
+                  </div>
+                )}
               </div>
               <ul className="space-y-1">
                 {(summary.key_insights || []).map((insight, i) => (
@@ -84,29 +197,39 @@ export default function MethodCard({ method, status, evidence, result, summary, 
             </div>
           )}
 
-          {/* Evidence bundle */}
+          {/* ── Evidence bundle ── */}
           {evidence && (
             <div className="bg-violet-50 rounded-lg p-3">
               <div className="flex items-center gap-1.5 mb-2">
                 <Database size={11} className="text-violet-600" />
                 <span className="text-xs font-medium text-violet-800">Evidence bundle</span>
-                <span className="text-xs text-violet-400 ml-auto">{evidence.extracted_evidence?.length || 0} items · {evidence.evidence_quality}</span>
+                <span className="text-xs text-violet-400 ml-auto">
+                  {evidence.extracted_evidence?.length || 0} items · {evidence.evidence_quality}
+                </span>
               </div>
-              {evidence.gaps?.length > 0 && <p className="text-xs text-violet-700 mb-1"><span className="font-medium">Gaps: </span>{evidence.gaps.slice(0, 3).join("; ")}</p>}
+              {evidence.gaps?.length > 0 && (
+                <p className="text-xs text-violet-700 mb-1">
+                  <span className="font-medium">Gaps: </span>
+                  {evidence.gaps.slice(0, 3).join("; ")}
+                </p>
+              )}
               {evidence.extracted_evidence?.slice(0, 5).map((e, i) => (
                 <div key={i} className="text-xs text-violet-700 pl-2 border-l-2 border-violet-200 mt-1">
-                  <span className="text-violet-400">[{e.entity}]</span> {e.content?.slice(0, 120)}{e.content?.length > 120 ? "…" : ""}
+                  <span className="text-violet-400">[{e.entity}]</span>{" "}
+                  {e.content?.slice(0, 120)}{e.content?.length > 120 ? "…" : ""}
                 </div>
               ))}
             </div>
           )}
 
-          {/* Full analysis — collapsible when summary exists */}
+          {/* ── Full analysis — collapsible when summary exists ── */}
           {result && (
             <div>
               {summary && (
-                <button onClick={() => setShowFullAnalysis(v => !v)}
-                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 mb-1.5 transition-colors">
+                <button
+                  onClick={() => setShowFullAnalysis(v => !v)}
+                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 mb-1.5 transition-colors"
+                >
                   {showFullAnalysis ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   Full analysis
                 </button>
@@ -133,46 +256,82 @@ export default function MethodCard({ method, status, evidence, result, summary, 
           )}
 
           {/* Notes */}
-          <textarea value={notes || ""} onChange={e => onNotesChange(e.target.value)} rows={1}
-            placeholder="Your notes — used by Revise to guide the analysis…" onClick={e => e.stopPropagation()}
-            className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 resize-y text-gray-700 placeholder-gray-400" />
+          <textarea
+            value={notes || ""}
+            onChange={e => onNotesChange(e.target.value)}
+            rows={1}
+            placeholder="Your notes — used by Revise to guide the analysis…"
+            onClick={e => e.stopPropagation()}
+            className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 resize-y text-gray-700 placeholder-gray-400"
+          />
 
-          {/* Actions */}
-          <div className="flex gap-1.5 flex-wrap">
-            {(!status || status === "pending" || status === "error") && (
-              <button onClick={e => { e.stopPropagation(); onRunExtract(); }} disabled={loading}
-                className="text-xs px-2.5 py-1 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 flex items-center gap-1">
-                {loading ? <Loader size={10} className="animate-spin" /> : <Filter size={10} />} Extract
+          {/* ── Action area ── */}
+          <div className="flex items-center gap-2">
+            {/* Primary CTA — big and prominent */}
+            {primary && (
+              <button
+                onClick={e => { e.stopPropagation(); primary.onClick?.(); }}
+                disabled={loading || !primary.onClick}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${primary.className}`}
+              >
+                {loading ? <Loader size={12} className="animate-spin" /> : primary.icon}
+                {primary.label}
               </button>
             )}
-            {status === "extracted" && (
-              <button onClick={e => { e.stopPropagation(); onRunExecute(); }} disabled={loading}
-                className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1">
-                {loading ? <Loader size={10} className="animate-spin" /> : <Zap size={10} />} Execute
-              </button>
-            )}
-            {status === "review" && (
-              <button onClick={e => { e.stopPropagation(); onApprove(); }} className="text-xs px-2.5 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1">
-                <Check size={10} /> Approve
-              </button>
-            )}
+
+            {/* "Done" state: Summarise as primary if no summary yet */}
             {status === "done" && !summary && result && (
-              <button onClick={e => { e.stopPropagation(); onSummarise(); }} disabled={loading}
-                className="text-xs px-2.5 py-1 bg-white border border-emerald-300 text-emerald-700 rounded-lg hover:bg-emerald-50 disabled:opacity-40 flex items-center gap-1">
-                {loading ? <Loader size={10} className="animate-spin" /> : <Sparkles size={10} />} Summarise
+              <button
+                onClick={e => { e.stopPropagation(); onSummarise(); }}
+                disabled={loading}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-emerald-300 text-emerald-700 rounded-lg text-xs font-semibold hover:bg-emerald-50 disabled:opacity-40 transition-colors"
+              >
+                {loading ? <Loader size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                Summarise
               </button>
             )}
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Secondary actions — shown via "···" toggle */}
             {(status === "review" || status === "done") && (
-              <>
-                <button onClick={e => { e.stopPropagation(); onRevise(); }} disabled={loading}
-                  className="text-xs px-2.5 py-1 bg-white border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 disabled:opacity-40 flex items-center gap-1">
-                  {loading ? <Loader size={10} className="animate-spin" /> : <Pencil size={10} />} Revise
+              <div className="relative">
+                <button
+                  onClick={e => { e.stopPropagation(); setShowSecondary(v => !v); }}
+                  className="flex items-center gap-1 px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="More actions"
+                >
+                  <MoreHorizontal size={14} />
                 </button>
-                <button onClick={e => { e.stopPropagation(); onRerun(); }} disabled={loading}
-                  className="text-xs px-2.5 py-1 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-40 flex items-center gap-1">
-                  <RotateCcw size={10} /> Re-run
-                </button>
-              </>
+                {showSecondary && (
+                  <div className="absolute right-0 bottom-8 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-10 min-w-[120px]">
+                    <button
+                      onClick={e => { e.stopPropagation(); setShowSecondary(false); onRevise(); }}
+                      disabled={loading}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 transition-colors"
+                    >
+                      <Pencil size={11} /> Revise
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); setShowSecondary(false); onRerun(); }}
+                      disabled={loading}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                    >
+                      <RotateCcw size={11} /> Re-run
+                    </button>
+                    {status === "done" && summary && result && (
+                      <button
+                        onClick={e => { e.stopPropagation(); setShowSecondary(false); onSummarise(); }}
+                        disabled={loading}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 transition-colors"
+                      >
+                        <Sparkles size={11} /> Re-summarise
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>

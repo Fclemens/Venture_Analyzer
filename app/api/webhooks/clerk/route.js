@@ -22,7 +22,7 @@ export async function POST(request) {
   let event;
   try {
     event = new Webhook(secret).verify(payload, headers);
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 

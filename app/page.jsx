@@ -2,8 +2,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Upload, Play, FileText, Lightbulb, Loader, AlertTriangle, Plus, X,
-  Check, ChevronDown, ChevronRight, Download, Copy, Database, Filter,
-  RotateCcw, Globe, StickyNote, Link as LinkIcon, Search,
+  Check, ChevronDown, ChevronRight, Download, Filter,
+  RotateCcw, Globe, StickyNote, Search,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,6 +15,8 @@ import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/li
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { escapeHtml as esc } from "@/lib/security-client";
 import { staleDependents } from "@/lib/staleness";
+import FinancialModel from "@/components/FinancialModel";
+import { runModel, describeModel } from "@/lib/finmodel";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
 async function pipeline(step, body) {
@@ -160,6 +162,9 @@ export default function Page() {
   // Searchable evidence chunks (and their embeddings) live on the server; the
   // browser only keeps counts for display.
   const [chunkStats, setChunkStats] = useState({ total: 0, web: 0, document: 0 });
+  const [finModel, setFinModel] = useState(null);       // { currency, assumptions, scenarios } — inputs only; results are computed
+  const [finProposing, setFinProposing] = useState(false);
+  const finSaveTimer = useRef(null);
   const [resultTimes, setResultTimes] = useState({});   // methodId → when its result text last changed
   const runVersions = useRef({});   // last seen version per method run (cheap change detection)
   const activeIdRef = useRef(null);
@@ -329,7 +334,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -354,6 +359,7 @@ export default function Page() {
     setMethodSummaries(s.methodSummaries || {});
     setPassSummaries(s.passSummaries || {});
     setPassSummaryStale(s.passSummaryStale || {});
+    setFinModel(s.finModel || null);
     setSources(s.sources || []);
     setChunkStats(project.chunkStats || { total: 0, web: 0, document: 0 });
     setEntryMode(project.entry_mode || "document");
@@ -642,6 +648,26 @@ export default function Page() {
     await queueRun(methodId, "revise", methodNotes[methodId] || "");
   }, [evidenceBundles, methodResults, methods, methodNotes, queueRun]);
 
+  // ── FINANCIAL MODEL (AI proposes inputs; maths is deterministic) ─────────────────
+  const updateFinModel = useCallback((next) => {
+    setFinModel(next);
+    clearTimeout(finSaveTimer.current);
+    finSaveTimer.current = setTimeout(() => { if (activeIdRef.current) saveState(activeIdRef.current, { finModel: next }); }, 800);
+  }, [saveState]);
+
+  const proposeFinAssumptions = useCallback(async () => {
+    setFinProposing(true); setError(null);
+    try {
+      const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
+      const res = await pipeline("fin_assumptions", { methodResults, ventureCtx, corpusText });
+      // Keep the user's own edits; refresh everything else
+      const prev = finModel?.assumptions || {};
+      const merged = Object.fromEntries(Object.entries(res.assumptions).map(([id, a]) => [id, prev[id]?.edited ? prev[id] : a]));
+      updateFinModel({ ...(finModel || {}), currency: finModel?.currency || res.currency, assumptions: merged });
+    } catch (err) { setError(`Could not propose assumptions: ${err.message}`); }
+    setFinProposing(false);
+  }, [methodResults, p0, corpusText, finModel, updateFinModel]);
+
   // ── REGENERATE PASS SUMMARY ───────────────────────────────────────────────────
   const regeneratePassSummary = useCallback(async (passId) => {
     const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
@@ -691,7 +717,7 @@ export default function Page() {
       setDocState(s => ({ ...s, chapters, progress: "Generating executive summary…" }));
 
       // Executive summary last — sees all chapters
-      const execSummary = await pipeline("compile_exec", { chapters, ventureCtx });
+      const execSummary = await pipeline("compile_exec", { chapters, ventureCtx, finSummary: describeModel(runModel(finModel?.assumptions, finModel?.scenarios), finModel?.currency ? finModel.currency + " " : "") });
       setDocState({ chapters, execSummary, generating: false, progress: "" });
       // Persist so it survives page reload
       await saveState(activeId, {
@@ -703,7 +729,7 @@ export default function Page() {
       setError(`Document generation failed: ${err.message}`);
       setDocState(s => ({ ...s, generating: false, progress: "" }));
     }
-  }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodNotes, methodSummaries, passSummaryStale, sources, saveState]);
+  }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodNotes, methodSummaries, passSummaryStale, sources, finModel, saveState]);
 
   const downloadHTML = useCallback(() => {
     const { chapters, execSummary } = docState;
@@ -1483,6 +1509,10 @@ ${passChapters}
                         stale={!!passSummaryStale[pg.id] || (pg.doneCount === pg.totalActive && pg.totalActive > 0 && !passSummaries[pg.id])}
                         onRegenerate={regeneratePassSummary}
                       />
+                      {pg.id === "p7" && (
+                        <FinancialModel finModel={finModel} onChange={updateFinModel} onPropose={proposeFinAssumptions}
+                          proposing={finProposing} hasAnalyses={Object.keys(methodResults).length > 0} />
+                      )}
                       {pg.methods.map(m => (
                         <MethodCard key={m.id} method={m}
                           status={methodStatus[m.id]}
@@ -1493,7 +1523,7 @@ ${passChapters}
                           projectId={activeId}
                           runVersion={runVersions.current[m.id]}
                           staleBecause={staleMap[m.id]}
-                          onRestored={(mid) => syncRuns(activeId, { full: true })}
+                          onRestored={() => syncRuns(activeId, { full: true })}
                           loading={!!methodLoading[m.id] || methodStatus[m.id] === "extracting" || methodStatus[m.id] === "executing"}
                           onRunExtract={() => runExtract(m.id)}
                           onRunExecute={() => runExecute(m.id)}

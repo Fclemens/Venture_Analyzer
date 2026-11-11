@@ -5,7 +5,7 @@ import {
   METHODOLOGY_REGISTRY,
   getP0DocSystem, getP0ConceptSystem,
   getMethodSummarySystem, getPassSummarySystem,
-  getChapterSystem, getExecutiveSystem,
+  getChapterSystem, getExecutiveSystem, getFinAssumptionsSystem,
   RECHUNK_SYSTEM,
 } from "@/lib/registry";
 import { embedBatch, chunkText } from "@/lib/embeddings";
@@ -13,6 +13,7 @@ import { parseJSON } from "@/lib/json";
 import { fence, rateLimit } from "@/lib/security";
 import { computeScore } from "@/lib/scoring";
 import { SCORE_DIMENSIONS } from "@/lib/constants";
+import { ASSUMPTION_FIELDS } from "@/lib/finmodel";
 import { insertChunks, chunkStats } from "@/lib/runs";
 import { makeCaller, ventureHeader, TRUNCATION_NOTE } from "@/lib/steps";
 
@@ -246,7 +247,7 @@ export async function POST(request) {
 
       // ── 11. Compile executive summary ─────────────────────────────────────────
       case "compile_exec": {
-        const { chapters, ventureCtx } = body;
+        const { chapters, ventureCtx, finSummary } = body;
         const header = ventureHeader(ventureCtx);
         const chaptersText = Object.entries(chapters)
           .map(([passId, text]) => `## ${passId}\n\n${text}`)
@@ -255,7 +256,7 @@ export async function POST(request) {
           role: "doc_exec",
           json: true,
           system: `${header}${getExecutiveSystem(ventureCtx)}`,
-          messages: [{ role: "user", content: `Synthesise these analytical chapters into the executive summary:\n\n${fence("chapters", chaptersText.slice(0, 80000))}` }],
+          messages: [{ role: "user", content: `Synthesise these analytical chapters into the executive summary:\n\n${fence("chapters", chaptersText.slice(0, 80000))}${finSummary ? `\n\nCOMPUTED FINANCIAL MODEL (deterministic output of the user's assumptions - quote these numbers, do not recompute or contradict them):\n${String(finSummary).slice(0, 4000)}` : ""}` }],
         });
 
         // Score and verdict are computed in code. A dimension is forced to null
@@ -275,6 +276,35 @@ export async function POST(request) {
           score: computed.score,
           score_rationale: computed.score_rationale,
         });
+      }
+
+      // ── 11b. Propose financial-model assumptions (the model does no arithmetic) ──
+      case "fin_assumptions": {
+        const { methodResults: results = {}, ventureCtx, corpusText } = body;
+        const analyses = Object.entries(results)
+          .filter(([, text]) => typeof text === "string" && text.trim())
+          .map(([id, text]) => `### ${METHODOLOGY_REGISTRY[id]?.name || id}\n${text}`)
+          .join("\n\n---\n\n")
+          .slice(0, 50000);
+        const res = await callModelLogged({
+          role: "smart",
+          json: true,
+          system: `${ventureHeader(ventureCtx)}${getFinAssumptionsSystem(ventureCtx)}`,
+          messages: [{ role: "user", content: `${fence("analyses", analyses || "(no analyses yet)")}\n\n${fence("document excerpt", (corpusText || "").slice(0, 10000))}\n\nPropose the model inputs.` }],
+          useSearch: true,
+        });
+        // Keep only known fields; shape-check values (they get clamped again on use)
+        const out = {};
+        for (const f of ASSUMPTION_FIELDS) {
+          const a = res.json.assumptions?.[f.id];
+          const v = a && typeof a === "object" ? a.value : a;
+          out[f.id] = {
+            value: v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v),
+            source: typeof a?.source === "string" ? a.source.slice(0, 300) : "",
+            confidence: ["high", "medium", "low"].includes(a?.confidence) ? a.confidence : "low",
+          };
+        }
+        return NextResponse.json({ currency: String(res.json.currency || "").slice(0, 8), assumptions: out });
       }
 
       // ── 12. Validate & clean competitor list ─────────────────────────────────

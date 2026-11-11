@@ -12,6 +12,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # LibreOffice recalculates the exported Excel formulas so the test can prove
+      # they match the JavaScript financial model
+      - name: Install LibreOffice Calc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc
       - run: npm ci
       - run: npm test
       - run: npm run build

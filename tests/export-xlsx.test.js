@@ -35,7 +35,17 @@ test("workbook has the expected sheets and carries cached model values", async (
   assert.equal(wb.getWorksheet("Summary").getCell("B5").value, "Conditional Invest");
 });
 
-test("Excel/LibreOffice recalculation of the formulas reproduces the JavaScript model exactly", async () => {
+// LibreOffice is the independent spreadsheet engine used to check the formulas.
+// On a developer machine without it the test is skipped (with a note); in CI it
+// is installed by the workflow, so a missing binary there is a real failure.
+const hasSoffice = (() => { try { execFileSync("soffice", ["--version"], { stdio: "ignore", timeout: 60000 }); return true; } catch { return false; } })();
+
+test("Excel/LibreOffice recalculation of the formulas reproduces the JavaScript model exactly", async (t) => {
+  if (!hasSoffice) {
+    if (process.env.CI) assert.fail("LibreOffice (soffice) is required in CI to verify the Excel formulas - install libreoffice-calc in the workflow");
+    t.skip("soffice not installed - skipping the independent formula recalculation check");
+    return;
+  }
   // Build WITHOUT cached values so the spreadsheet engine must compute everything itself
   const buf = await buildWorkbook({ finModel }, { cacheResults: false });
   const src = path.join(dir, "model.xlsx");

@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { Webhook } from "svix";
-import { logEvent } from "@/lib/db";
+import { logEvent, deleteUserData } from "@/lib/db";
 
 // Clerk sends signed webhooks — verify the signature before trusting the payload.
+// Subscribe to "session.created" (usage) and "user.deleted" (data erasure).
 // Set CLERK_WEBHOOK_SECRET in env vars (Clerk dashboard → Webhooks → signing secret).
 export async function POST(request) {
   const secret = process.env.CLERK_WEBHOOK_SECRET;
@@ -30,6 +31,11 @@ export async function POST(request) {
   if (type === "session.created") {
     // data.user_id is the Clerk userId
     logEvent({ userId: data.user_id, eventType: "sign_in" });
+  }
+
+  if (type === "user.deleted" && data?.id) {
+    // Remove the user's projects, encrypted API keys and usage history
+    deleteUserData(data.id);
   }
 
   return NextResponse.json({ ok: true });

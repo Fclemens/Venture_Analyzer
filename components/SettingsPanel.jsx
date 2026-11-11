@@ -130,6 +130,12 @@ export default function SettingsPanel({ onClose }) {
         </div>
 
         <div className="flex-1 px-5 py-4 space-y-6">
+          {settings._decryptFailed && (
+            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
+              <AlertCircle size={14} className="text-red-600 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-red-700">Your saved settings could not be decrypted — the server&apos;s encryption key has probably changed. Please re-enter your API keys below and save.</p>
+            </div>
+          )}
           {/* ── API Keys ── */}
           <section>
             <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">API Keys</h3>

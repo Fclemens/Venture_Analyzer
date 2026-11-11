@@ -13,6 +13,7 @@ import MethodCard from "@/components/MethodCard";
 import PassSummaryCard from "@/components/PassSummaryCard";
 import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/lib/constants";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
+import { escapeHtml as esc } from "@/lib/security-client";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
 async function pipeline(step, body) {
@@ -27,8 +28,9 @@ async function pipeline(step, body) {
 }
 
 // ─── Markdown → HTML (for self-contained HTML report download) ───────────────
-function mdToHtml(text) {
-  if (!text) return '';
+function mdToHtml(rawText) {
+  if (!rawText) return '';
+  const text = esc(rawText); // never let model/web text inject markup into the exported report
   const inline = (t) => (t || '')
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -190,7 +192,11 @@ export default function Page() {
 
   // ── File handler ───────────────────────────────────────────────────────────────
   const readFiles = useCallback((fileList) => {
-    const accepted = Array.from(fileList).filter(f => /\.(pdf|png|jpg|jpeg)$/i.test(f.name));
+    const MAX_BYTES = 20 * 1024 * 1024;
+    const typed = Array.from(fileList).filter(f => /\.(pdf|png|jpg|jpeg)$/i.test(f.name));
+    const accepted = typed.filter(f => f.size <= MAX_BYTES);
+    if (typed.length > accepted.length) setError("Some files were skipped: the limit is 20 MB per file.");
+    else if (!typed.length && fileList.length) setError("Only PDF, PNG and JPEG files are supported.");
     if (!accepted.length) return;
     Promise.all(accepted.map(f => new Promise(resolve => {
       const reader = new FileReader();
@@ -289,6 +295,7 @@ export default function Page() {
         reader.readAsDataURL(f);
       });
       const result = await pipeline("ingest_doc", { fileBase64: base64, fileType: mimeType, fileName: f.name, existingChunks: chunks });
+      if (result.truncated) setError(`Warning: ${f.name} is very long and its text was cut at the model's output limit.`);
       const newSource = { id: crypto.randomUUID(), type: "document", name: f.name, rawText: result.text, addedAt: new Date().toISOString() };
       const newSources = [...sources, newSource];
       const newChunks = [...chunks, ...(result.chunks || [])];
@@ -392,8 +399,13 @@ export default function Page() {
         // Step 1: ingest all files — primary first, then additional
         setLoadingMsg(`Reading ${files.length > 1 ? `${files.length} documents` : "document"}…`);
         const ingestResults = await Promise.all(
-          files.map(f => pipeline("ingest", { fileBase64: f.base64, fileType: f.mimeType }))
+          files.map(f => pipeline("ingest", { fileBase64: f.base64, fileType: f.mimeType, fileName: f.file.name }))
         );
+        // Whole-document chunks (with embeddings) so every method can retrieve from all pages
+        const docChunks = ingestResults.flatMap(r => r.chunks || []);
+        setChunks(docChunks);
+        const cut = ingestResults.map((r, i) => r.truncated ? files[i].file.name : null).filter(Boolean);
+        if (cut.length) setError(`Warning: ${cut.join(", ")} is very long and its text was cut at the model's output limit. Later pages may be missing from the analysis.`);
         // Concatenate all text, separated by a clear divider
         docText = ingestResults.map((r, i) => (
           files.length > 1 ? `=== ${files[i].file.name} ===\n${r.text}` : r.text
@@ -417,7 +429,7 @@ export default function Page() {
         setMethods(built);
 
         const projectName = p0Result.venture_name || name;
-        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources });
+        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources, chunks: docChunks });
         await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running", name: projectName }) });
         setProjects(prev => prev.map(p => p.id === project.id ? { ...p, name: projectName } : p));
 
@@ -755,6 +767,9 @@ export default function Page() {
   .recommendation h2{color:#ccc;border:none;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px}
   .recommendation p{color:#eee;font-size:.95em;margin:0}
   .recommendation em{color:#aaa;font-size:.85em;display:block;margin-bottom:8px}
+  table{border-collapse:collapse;width:100%;font-size:.85em;margin:12px 0 28px}
+  th,td{border:1px solid #e3e3e3;padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f5f5f2;font-size:.8em;text-transform:uppercase;letter-spacing:.04em}
   /* Chapters */
   .chapter{margin:56px 0;padding-top:4px}
   .chapter-header{display:flex;align-items:baseline;gap:12px;margin-bottom:16px;border-bottom:2px solid #111;padding-bottom:10px}
@@ -775,28 +790,34 @@ export default function Page() {
 </style>
 </head>
 <body>
-<h1>${p0?.venture_name || 'Venture Analysis'}</h1>
-<p class="meta">${new Date().toLocaleDateString('en-GB', {day:'numeric',month:'long',year:'numeric'})} &nbsp;·&nbsp; ${p0?.classification?.business_model?.toUpperCase() || ''} &nbsp;·&nbsp; ${p0?.stage || ''} &nbsp;·&nbsp; ${Object.keys(chapters).length} passes analysed</p>
+<h1>${esc(p0?.venture_name || 'Venture Analysis')}</h1>
+<p class="meta">${new Date().toLocaleDateString('en-GB', {day:'numeric',month:'long',year:'numeric'})} &nbsp;·&nbsp; ${esc(p0?.classification?.business_model?.toUpperCase() || '')} &nbsp;·&nbsp; ${esc(p0?.stage || '')} &nbsp;·&nbsp; ${Object.keys(chapters).length} passes analysed</p>
 
 <div class="exec">
   <div class="exec-top">
     <div>
-      <div class="verdict">${execSummary.verdict || ''}</div>
+      <div class="verdict">${esc(execSummary.verdict || '')}</div>
       <h2>Executive Summary</h2>
     </div>
-    <div class="score">${execSummary.score || ''}</div>
+    <div class="score">${esc(execSummary.score || '')}</div>
   </div>
-  ${execSummary.investment_thesis ? `<p class="thesis">${execSummary.investment_thesis}</p>` : ''}
+  ${execSummary.investment_thesis ? `<p class="thesis">${esc(execSummary.investment_thesis)}</p>` : ''}
   ${execSummary.executive_summary ? `<div>${mdToHtml(execSummary.executive_summary)}</div>` : ''}
 </div>
 
 ${(execSummary.strongest_findings?.length || execSummary.key_risks?.length) ? `
 <div class="two-col">
-  ${execSummary.strongest_findings?.length ? `<div class="findings-box"><h3>Key Findings</h3><ul>${execSummary.strongest_findings.map(f=>`<li>${f}</li>`).join('')}</ul></div>` : '<div></div>'}
-  ${execSummary.key_risks?.length ? `<div class="risks-box"><h3>Key Risks</h3><ul>${execSummary.key_risks.map(r=>`<li>${r}</li>`).join('')}</ul></div>` : '<div></div>'}
+  ${execSummary.strongest_findings?.length ? `<div class="findings-box"><h3>Key Findings</h3><ul>${execSummary.strongest_findings.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></div>` : '<div></div>'}
+  ${execSummary.key_risks?.length ? `<div class="risks-box"><h3>Key Risks</h3><ul>${execSummary.key_risks.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></div>` : '<div></div>'}
 </div>` : ''}
 
-${execSummary.recommendation ? `<div class="recommendation"><h2>Recommendation</h2>${execSummary.score_rationale ? `<em>${execSummary.score_rationale}</em>` : ''}<p>${execSummary.recommendation}</p></div>` : ''}
+${execSummary.recommendation ? `<div class="recommendation"><h2>Recommendation</h2>${execSummary.score_rationale ? `<em>${esc(execSummary.score_rationale)}</em>` : ''}<p>${esc(execSummary.recommendation)}</p></div>` : ''}
+
+${execSummary.score_breakdown?.length ? `<h2>Score breakdown</h2><table><tr><th>Dimension</th><th>Weight</th><th>Score</th><th>Confidence</th><th>Basis</th></tr>${execSummary.score_breakdown.map(d=>`<tr><td>${esc(d.label)}</td><td>${Math.round(d.weight*100)}%</td><td>${d.score ?? 'n/a'}</td><td>${esc(d.confidence || '')}</td><td>${esc((d.evidence||[]).join('; '))}</td></tr>`).join('')}</table>` : ''}
+
+${execSummary.tensions?.length ? `<h2>Tensions across the analysis</h2><ul>${execSummary.tensions.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+
+${execSummary.founder_questions?.length ? `<h2>Questions for the founders</h2><ol>${execSummary.founder_questions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol>` : ''}
 
 ${passChapters}
 </body>
@@ -1053,6 +1074,17 @@ ${passChapters}
                         <span className="text-3xl font-bold text-gray-900">{execSummary.score}</span>
                         {execSummary.score_rationale && <span className="text-xs text-gray-500 flex-1">{execSummary.score_rationale}</span>}
                       </div>
+                      {execSummary.score_breakdown?.length > 0 && (
+                        <div className="mt-4 border-t border-gray-100 pt-3 space-y-1.5">
+                          {execSummary.score_breakdown.map(d => (
+                            <div key={d.id} className="flex items-start gap-3 text-xs">
+                              <span className="w-40 flex-shrink-0 text-gray-700 font-medium">{d.label} <span className="text-gray-300 font-normal">{Math.round(d.weight * 100)}%</span></span>
+                              <span className={`w-10 flex-shrink-0 font-semibold ${d.score == null ? "text-gray-300" : d.score >= 7 ? "text-emerald-600" : d.score >= 5 ? "text-amber-600" : "text-red-600"}`}>{d.score == null ? "n/a" : d.score}</span>
+                              <span className="text-gray-500 flex-1">{d.evidence?.join("; ")}{d.confidence ? ` (${d.confidence} confidence)` : ""}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Executive summary */}
@@ -1121,6 +1153,16 @@ ${passChapters}
                       <div className="bg-gray-900 text-white rounded-2xl p-5">
                         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Recommendation</h3>
                         <p className="text-sm leading-relaxed">{execSummary.recommendation}</p>
+                      </div>
+                    )}
+
+                    {/* Questions for the founders */}
+                    {execSummary.founder_questions?.length > 0 && (
+                      <div className="bg-white rounded-2xl border border-gray-200 p-5">
+                        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Questions for the founders</h3>
+                        <ol className="list-decimal pl-5 space-y-1.5 text-sm text-gray-700">
+                          {execSummary.founder_questions.map((q, i) => <li key={i}>{q}</li>)}
+                        </ol>
                       </div>
                     )}
 

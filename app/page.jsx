@@ -1044,8 +1044,14 @@ ${passChapters}
                       </button>
                       <button onClick={downloadHTML}
                         className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-1.5">
-                        <Download size={13} /> Download HTML
+                        <Download size={13} /> HTML
                       </button>
+                      {[["docx", "Word"], ["xlsx", "Excel model"], ["md", "Markdown"]].map(([fmt, label]) => (
+                        <a key={fmt} href={`/api/projects/${activeId}/export?format=${fmt}${fmt === "docx" ? "&appendix=1" : ""}`} download
+                          className="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50 flex items-center gap-1.5">
+                          <Download size={13} /> {label}
+                        </a>
+                      ))}
                     </>
                   )}
                 </div>
@@ -1510,7 +1516,7 @@ ${passChapters}
                         onRegenerate={regeneratePassSummary}
                       />
                       {pg.id === "p7" && (
-                        <FinancialModel finModel={finModel} onChange={updateFinModel} onPropose={proposeFinAssumptions}
+                        <FinancialModel finModel={finModel} onChange={updateFinModel} onPropose={proposeFinAssumptions} exportHref={`/api/projects/${activeId}/export?format=xlsx`}
                           proposing={finProposing} hasAnalyses={Object.keys(methodResults).length > 0} />
                       )}
                       {pg.methods.map(m => (

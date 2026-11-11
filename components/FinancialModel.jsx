@@ -31,7 +31,7 @@ function CashChart({ model, cur }) {
 }
 
 // Editable assumptions → deterministic projection. The LLM only proposes inputs.
-export default function FinancialModel({ finModel, onChange, onPropose, proposing, hasAnalyses }) {
+export default function FinancialModel({ finModel, onChange, onPropose, proposing, hasAnalyses, exportHref }) {
   const [showMonths, setShowMonths] = useState(false);
   const [showScenarios, setShowScenarios] = useState(false);
   const fm = finModel || { currency: "", assumptions: {}, scenarios: DEFAULT_SCENARIOS };
@@ -53,8 +53,12 @@ export default function FinancialModel({ finModel, onChange, onPropose, proposin
         <Calculator size={14} className="text-gray-500" />
         <span className="text-sm font-semibold text-gray-900">Financial model</span>
         <span className="text-xs text-gray-400">calculated from your assumptions — not written by the AI</span>
+        {exportHref && Object.keys(fm.assumptions).length > 0 && (
+          <a href={exportHref} download className="ml-auto text-xs px-2.5 py-1 border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600"
+            title="Excel workbook with the model as live formulas">Excel (live formulas)</a>
+        )}
         <button onClick={onPropose} disabled={proposing}
-          className="ml-auto text-xs px-2.5 py-1 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 flex items-center gap-1">
+          className={`${exportHref && Object.keys(fm.assumptions).length > 0 ? "" : "ml-auto "}text-xs px-2.5 py-1 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 flex items-center gap-1">
           {proposing ? <Loader size={10} className="animate-spin" /> : <Sparkles size={10} />}
           {Object.keys(fm.assumptions).length ? "Re-propose from analysis" : "Propose assumptions from analysis"}
         </button>

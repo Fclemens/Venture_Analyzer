@@ -110,7 +110,8 @@ export async function POST(request) {
       throw new HttpError("Your saved settings could not be decrypted (the server ENCRYPTION_KEY probably changed). Re-enter your API keys in Settings.", 409);
     }
 
-    const callModelLogged = makeCaller({ userId, settings, step });
+    const usageProject = typeof body.projectId === "string" && projectAccess(body.projectId, userId, orgId ?? null) ? body.projectId : null;
+    const callModelLogged = makeCaller({ userId, settings, step, projectId: usageProject });
 
     switch (step) {
 

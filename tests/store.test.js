@@ -145,3 +145,14 @@ test("result_updated_at moves only when the result text changes (not on approve/
   assert.ok(runs.getRun("p-stale", "m").result_updated_at > t1);
   assert.ok(a.version >= 1);
 });
+
+test("model usage is attributed to the deal and removed with it", () => {
+  mkProject("p-use");
+  db.logEvent({ userId: "u1", eventType: "pipeline_call", step: "execute", usage: { input: 100, output: 50 }, projectId: "p-use" });
+  db.logEvent({ userId: "u2", eventType: "pipeline_call", step: "extract", inputText: "x".repeat(400), outputText: "", projectId: "p-use" }); // estimated: 100
+  db.logEvent({ userId: "u1", eventType: "pipeline_call", step: "execute", usage: { input: 999, output: 1 }, projectId: "other" });
+  assert.deepEqual(runs.projectUsage("p-use"), { calls: 2, tokens: 250 });
+  db.deleteProject("p-use", "u1");
+  assert.deepEqual(runs.projectUsage("p-use"), { calls: 0, tokens: 0 });
+  assert.equal(runs.projectUsage("other").tokens, 1000, "other deals untouched");
+});

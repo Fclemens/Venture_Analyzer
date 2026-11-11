@@ -22,11 +22,13 @@ import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
+// The active project, so every model call is attributed to it for usage tracking
+let pipelineProjectId = null;
 async function pipeline(step, body) {
   const res = await fetch("/api/pipeline", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ step, ...body }),
+    body: JSON.stringify({ step, projectId: pipelineProjectId, ...body }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Pipeline error ${res.status}`);
@@ -168,6 +170,7 @@ export default function Page() {
   const { organization } = useOrganization();
   const [projectMeta, setProjectMeta] = useState({ is_owner: true, shared: false });
   const [commentCounts, setCommentCounts] = useState({});
+  const [usage, setUsage] = useState({ calls: 0, tokens: 0 });
   const [finModel, setFinModel] = useState(null);       // { currency, assumptions, scenarios } — inputs only; results are computed
   const [finProposing, setFinProposing] = useState(false);
   const finSaveTimer = useRef(null);
@@ -341,7 +344,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setCommentCounts({}); setProjectMeta({ is_owner: true, shared: false }); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setCommentCounts({}); setUsage({ calls: 0, tokens: 0 }); setProjectMeta({ is_owner: true, shared: false }); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -500,7 +503,7 @@ export default function Page() {
   // queues them and polls. Closing the tab does not stop a run, independent
   // methods run in parallel, and evidence, results and embeddings never travel
   // through the browser.
-  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { activeIdRef.current = activeId; pipelineProjectId = activeId; }, [activeId]);
   useEffect(() => { entitiesRef.current = entities; }, [entities]);
 
   // Fold competitor names the server discovered into the entity list (idempotent)
@@ -522,6 +525,7 @@ export default function Page() {
       if (!res.ok || projectId !== activeIdRef.current) return;
       const data = await res.json();
       if (data.chunks) setChunkStats(data.chunks);
+      if (data.usage) setUsage(data.usage);
 
       if (full) {
         const st = {}, ev = {}, rs = {}, times = {};
@@ -885,6 +889,20 @@ ${passChapters}
     a.download = `${(p0?.venture_name || 'analysis').replace(/\s+/g,'-')}-report.html`;
     a.click();
   }, [docState, p0]);
+
+  // Every "this contradicts the initial scoping" flag raised by a method or pass summary
+  const revisionTriggers = useMemo(() => {
+    const out = [];
+    for (const m of methods) {
+      if (m.decision === "skip") continue;
+      for (const t of methodSummaries[m.id]?.revision_triggers || []) out.push({ pass: m.pass, source: METHODOLOGY_REGISTRY[m.id]?.name || m.id, text: t });
+    }
+    for (const [pid, ps] of Object.entries(passSummaries)) {
+      const pd = PASS_DEFS.find(p => p.id === pid);
+      for (const t of ps?.revision_triggers || []) out.push({ pass: pid, source: `P${pd?.num ?? ""} ${pd?.title ?? pid} (pass summary)`, text: t });
+    }
+    return out;
+  }, [methods, methodSummaries, passSummaries]);
 
   const staleMap = useMemo(
     () => staleDependents({ methods, resultTimes, dependencies: DEPENDENCIES }),
@@ -1284,7 +1302,7 @@ ${passChapters}
                   </span>
                 )}
                 <span className="text-xs text-gray-400 ml-3">
-                  {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunkStats.web} web chunks · {totalDone}/{totalActive}
+                  {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunkStats.web} web chunks{usage.tokens > 0 ? ` · ${usage.tokens >= 1e6 ? (usage.tokens / 1e6).toFixed(2) + "M" : Math.round(usage.tokens / 1000) + "k"} tokens used` : ""} · {totalDone}/{totalActive}
                 </span>
               </div>
               <div className="flex gap-2">
@@ -1336,6 +1354,20 @@ ${passChapters}
                 {/* P0 View */}
                 {activePass === "p0" && p0 && (
                   <div className="space-y-3 max-w-3xl">
+                    {revisionTriggers.length > 0 && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                        <h2 className="text-sm font-semibold text-amber-900 mb-1">Findings that challenge the initial scoping ({revisionTriggers.length})</h2>
+                        <p className="text-xs text-amber-800 mb-2">The analyses below contradict an assumption made when this venture was classified. Review them — they may change which analyses matter, or the classification itself.</p>
+                        <ul className="space-y-1.5">
+                          {revisionTriggers.map((t, i) => (
+                            <li key={i} className="text-xs text-amber-900">
+                              <button onClick={() => setActivePass(t.pass)} className="font-medium underline decoration-amber-300 hover:decoration-amber-600">{t.source}</button>
+                              <span className="text-amber-700"> — </span>{t.text}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     <div className="bg-white rounded-xl border border-gray-200 p-4">
                       <h2 className="text-sm font-semibold mb-2">Venture classification</h2>
                       <p className="text-sm text-gray-600 mb-3">{p0.venture_summary}</p>

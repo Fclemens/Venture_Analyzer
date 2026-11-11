@@ -4,7 +4,7 @@ import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { rateLimit } from "@/lib/security";
 import { ensureWorker, submitJob } from "@/lib/jobs";
 import {
-  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts,
+  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts, projectUsage,
 } from "@/lib/runs";
 
 // Method runs are queued server-side. The browser enqueues work and polls;
@@ -37,7 +37,7 @@ export async function GET(request, { params }) {
 
     const full = url.searchParams.get("full") === "1";
     const runs = Object.fromEntries(listRuns(a.projectId, { full }).map(r => [r.method_id, r]));
-    return NextResponse.json({ runs, chunks: chunkStats(a.projectId), jobs: jobCounts() });
+    return NextResponse.json({ runs, chunks: chunkStats(a.projectId), jobs: jobCounts(), usage: projectUsage(a.projectId) });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

@@ -14,6 +14,7 @@ import PassSummaryCard from "@/components/PassSummaryCard";
 import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/lib/constants";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { escapeHtml as esc } from "@/lib/security-client";
+import { staleDependents } from "@/lib/staleness";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
 async function pipeline(step, body) {
@@ -159,6 +160,7 @@ export default function Page() {
   // Searchable evidence chunks (and their embeddings) live on the server; the
   // browser only keeps counts for display.
   const [chunkStats, setChunkStats] = useState({ total: 0, web: 0, document: 0 });
+  const [resultTimes, setResultTimes] = useState({});   // methodId → when its result text last changed
   const runVersions = useRef({});   // last seen version per method run (cheap change detection)
   const activeIdRef = useRef(null);
   const entitiesRef = useRef(null);
@@ -327,7 +329,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -498,18 +500,24 @@ export default function Page() {
       if (data.chunks) setChunkStats(data.chunks);
 
       if (full) {
-        const st = {}, ev = {}, rs = {};
+        const st = {}, ev = {}, rs = {}, times = {};
         for (const [mid, r] of Object.entries(data.runs)) {
           st[mid] = r.status;
+          if (r.result_updated_at) times[mid] = r.result_updated_at;
           if (r.evidence) ev[mid] = r.evidence;
           if (r.result != null) rs[mid] = r.result;
           runVersions.current[mid] = r.version;
         }
-        setMethodStatus(st); setEvidenceBundles(ev); setMethodResults(rs);
+        setMethodStatus(st); setEvidenceBundles(ev); setMethodResults(rs); setResultTimes(times);
         return;
       }
 
       const settled = [];
+      setResultTimes(prev => {
+        const next = { ...prev };
+        for (const [mid, r] of Object.entries(data.runs)) if (r.result_updated_at) next[mid] = r.result_updated_at;
+        return next;
+      });
       setMethodStatus(prev => {
         const next = { ...prev };
         for (const [mid, r] of Object.entries(data.runs)) {
@@ -824,6 +832,11 @@ ${passChapters}
     });
     return doc;
   }, [p0, methods, methodResults, entryMode, pipelineMode]);
+
+  const staleMap = useMemo(
+    () => staleDependents({ methods, resultTimes, dependencies: DEPENDENCIES }),
+    [methods, resultTimes]
+  );
 
   const passGroups = useMemo(() => PASS_DEFS.map(pd => ({
     ...pd,
@@ -1477,6 +1490,10 @@ ${passChapters}
                           result={methodResults[m.id]}
                           summary={methodSummaries[m.id]}
                           notes={methodNotes[m.id]}
+                          projectId={activeId}
+                          runVersion={runVersions.current[m.id]}
+                          staleBecause={staleMap[m.id]}
+                          onRestored={(mid) => syncRuns(activeId, { full: true })}
                           loading={!!methodLoading[m.id] || methodStatus[m.id] === "extracting" || methodStatus[m.id] === "executing"}
                           onRunExtract={() => runExtract(m.id)}
                           onRunExecute={() => runExecute(m.id)}

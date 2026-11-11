@@ -132,3 +132,16 @@ test("deleting a project removes all derived rows; deleteUserData wipes the acco
   assert.equal(db.projectExists("p-del2", "gone"), false);
   assert.equal(db.projectExists("p-own", "owner"), true, "other users' data untouched");
 });
+
+test("result_updated_at moves only when the result text changes (not on approve/status)", async () => {
+  mkProject("p-stale");
+  const a = runs.saveRun("p-stale", "m", { status: "review", result: "v1" });
+  const t1 = runs.getRun("p-stale", "m").result_updated_at;
+  assert.ok(t1 > 0);
+  await new Promise(r => setTimeout(r, 15));
+  runs.saveRun("p-stale", "m", { status: "done" });
+  assert.equal(runs.getRun("p-stale", "m").result_updated_at, t1, "approve must not count as a content change");
+  runs.saveRun("p-stale", "m", { status: "review", result: "v2" });
+  assert.ok(runs.getRun("p-stale", "m").result_updated_at > t1);
+  assert.ok(a.version >= 1);
+});

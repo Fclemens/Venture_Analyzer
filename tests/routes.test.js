@@ -115,3 +115,22 @@ test("loading a project serves merged web sources and chunk stats; a stale brows
   assert.equal(runs.getRun("p1", "bear_case").result, before);
   assert.equal(runs.loadChunks("p1").length, 1, "stale empty chunks array did not wipe the index");
 });
+
+test("restore puts an old version back as the current draft and records the restore", async () => {
+  as("alice");
+  runs.saveRun("p1", "scenario_modeling", { status: "review", result: "draft 2" });
+  runs.appendVersion("p1", "scenario_modeling", "execute", "draft 1");
+  runs.appendVersion("p1", "scenario_modeling", "revise", "draft 2");
+  const versions = runs.listVersions("p1", "scenario_modeling");
+  const first = versions.find(v => v.result === "draft 1");
+
+  assert.equal((await post("p1", { action: "restore", methodId: "scenario_modeling", versionId: 999999 })).status, 404);
+  const res = await post("p1", { action: "restore", methodId: "scenario_modeling", versionId: first.id });
+  assert.equal(res.status, 200);
+  assert.equal(runs.getRun("p1", "scenario_modeling").result, "draft 1");
+  assert.equal(runs.getRun("p1", "scenario_modeling").status, "review", "restored text needs re-approval");
+  assert.deepEqual(runs.listVersions("p1", "scenario_modeling").map(v => v.kind), ["restore", "revise", "execute"]);
+
+  as("mallory");
+  assert.equal((await post("p1", { action: "restore", methodId: "scenario_modeling", versionId: first.id })).status, 404);
+});

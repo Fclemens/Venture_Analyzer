@@ -58,7 +58,7 @@ export default function FinancialModel({ finModel, onChange, onPropose, proposin
             title="Excel workbook with the model as live formulas">Excel (live formulas)</a>
         )}
         <button onClick={onPropose} disabled={proposing}
-          className={`${exportHref && Object.keys(fm.assumptions).length > 0 ? "" : "ml-auto "}text-xs px-2.5 py-1 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 flex items-center gap-1">
+          className={`${exportHref && Object.keys(fm.assumptions).length > 0 ? "" : "ml-auto "}text-xs px-2.5 py-1 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40 flex items-center gap-1`}>
           {proposing ? <Loader size={10} className="animate-spin" /> : <Sparkles size={10} />}
           {Object.keys(fm.assumptions).length ? "Re-propose from analysis" : "Propose assumptions from analysis"}
         </button>

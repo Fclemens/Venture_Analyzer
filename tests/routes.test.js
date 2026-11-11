@@ -72,7 +72,7 @@ test("polling is lightweight; per-method fetch returns evidence, result, web sou
   const lite = await (await get("p1")).json();
   assert.equal(lite.runs.bear_case.status, "review");
   assert.equal("result" in lite.runs.bear_case, false, "polling omits heavy fields");
-  assert.deepEqual(lite.chunks, { total: 2, web: 1, document: 1 });
+  assert.deepEqual(lite.chunks, { total: 2, web: 1, document: 1, stale: 0 });
 
   const full = await (await get("p1", "?full=1")).json();
   assert.equal(full.runs.bear_case.result, "## Bear\nrisks");
@@ -98,7 +98,7 @@ test("deleting a source removes web rows and document chunks, only for the owner
   as("alice");
   const res = await sourcesRoute.DELETE(req("/x?id=w1&name=deck.pdf"), ctx("p1"));
   assert.equal(res.status, 200);
-  assert.deepEqual((await res.json()).chunks, { total: 1, web: 1, document: 0 });
+  assert.deepEqual((await res.json()).chunks, { total: 1, web: 1, document: 0, stale: 0 });
   assert.equal(runs.listWebSources("p1").length, 0);
 });
 
@@ -180,4 +180,16 @@ test("pipeline route: unsupported or oversized uploads are rejected before any m
     assert.match((await corrupt.json()).error, /Could not read bad\.docx/);
     assert.equal(fetched, false, "no provider call is made for rejected or locally parsed files");
   } finally { globalThis.fetch = real; }
+});
+
+test("reindex route: auth, ownership, no-op when nothing is stale", async () => {
+  const reindex = await import("../app/api/projects/[id]/reindex/route.js");
+  db.createProject({ id: "ri", name: "ri", userId: "alice" });
+  const call = () => reindex.POST(new Request("http://x/r", { method: "POST" }), { params: Promise.resolve({ id: "ri" }) });
+  as(null);  assert.equal((await call()).status, 401);
+  as("mallory"); assert.equal((await call()).status, 404);
+  as("alice");
+  const res = await call();
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).status, "up-to-date");
 });

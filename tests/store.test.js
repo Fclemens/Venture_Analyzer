@@ -29,7 +29,7 @@ test("chunks round-trip with float32 embeddings and are searchable by stats", ()
   assert.ok(Math.abs(loaded[0].embedding[1] - vec(1, 2, 3)[1]) < 1e-6);
   assert.deepEqual(loaded[1].pass_relevance, ["p3"]);
   assert.equal(loaded[2].embedding, null);
-  assert.deepEqual(runs.chunkStats("p-chunks"), { total: 3, web: 1, document: 2 });
+  assert.deepEqual(runs.chunkStats("p-chunks"), { total: 3, web: 1, document: 2, stale: 0 });
 
   assert.equal(runs.deleteDocumentChunks("p-chunks", "deck.pdf"), 1);
   assert.equal(runs.loadChunks("p-chunks").length, 2);

@@ -61,23 +61,20 @@ Browser (app/page.jsx)             Next.js server                         SQLite
 - **Existing projects migrate automatically** the first time they're opened.
 - All SQL for this is in `lib/runs.js`, so moving to Postgres + pgvector later is a contained change.
 
+## Configuration highlights
+
+| Variable | Purpose |
+|---|---|
+| `VENTURE_DATA_DIR` | Where the SQLite database and embedding-model cache live (use a persistent volume) |
+| `PIPELINE_CONCURRENCY`, `PIPELINE_PER_USER` | Parallel method runs overall / per user |
+| `EMBEDDING_MODEL` | `bge-small-en` (default) or `multilingual-e5-small` for non-English decks. After switching, open each deal's Sources panel and click **Re-index** - vectors from different models are never mixed |
+| `SEC_CONTACT_EMAIL`, `CONNECTOR_CONTACT_EMAIL` | Enable / identify the optional outside-data connectors (also opt-in per user in Settings) |
+
+Supported uploads: PDF and images (read by the model), Word, PowerPoint, Excel, CSV, text and Markdown (parsed locally, exactly). Exports: Word, Excel (the financial model as live formulas), Markdown, HTML.
+
 ## Limitations / roadmap
 
-- The worker runs inside the Next.js server process, so it needs a long-lived Node host with a persistent disk (not serverless). The queue is already in the database; moving execution to a separate worker process or a managed workflow service means replacing `pump()` in `lib/jobs.js`. SQLite is single-writer, so multiple server instances need Postgres first.
-- P0 scoping, summaries and report compilation are still driven by the browser (short, user-initiated calls).
-- Unit economics and scenarios are still model-written prose; a calculated model with editable assumptions is planned.
-- Web search is the only external data source; registries, funding, patent and traffic data connectors are not built.
-- No team workspaces, version-history UI (the data is stored), or Word/Excel export yet.
-
-## Team workspaces (optional)
-
-Enable **Organizations** in the Clerk dashboard, then use the switcher at the top of the sidebar to pick a workspace. An owner can click **Share with team** on a deal:
-
-| | Owner | Org member |
-|---|---|---|
-| View, edit notes/state, export | ✅ | ✅ |
-| Run extract / execute / revise, generate report | ✅ | ✅ — using **their own** API keys |
-| Comment (per method or on the whole deal) | ✅ | ✅ (authors can delete their own) |
-| Share / make private, delete | ✅ | ❌ |
-
-Strangers (other orgs, users without an org) get 404 on everything, and access is revoked the moment a deal is made private. Deleting an owner's account deletes their deals (including shared ones).
+- **Hosting:** the job worker runs inside the Next.js server process, so it needs a long-lived Node host with a persistent disk (not serverless), and SQLite allows a single server instance. The queue and all state are already in the database: moving to Postgres + pgvector (all SQL is in `lib/db.js` / `lib/runs.js`) and a separate worker process are the next steps for horizontal scaling.
+- **Outside-data connectors** (OpenAlex, SEC EDGAR) were written against the providers' documented response formats and unit-tested with fixtures, but have not been exercised against the live APIs. They fail safe (any problem yields no evidence). Registries, patent offices, funding and traffic databases are not connected - most need paid keys.
+- P0 scoping, per-method summaries and pass summaries are still user-initiated calls made from the browser (short, interactive).
+- No end-to-end browser test: sign-in goes through Clerk, which the test environment cannot reach. Server logic, API routes and exports are covered by 96 automated tests (`npm test`); the React UI is verified by lint and build only.

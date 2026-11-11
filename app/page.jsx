@@ -726,6 +726,23 @@ export default function Page() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshComments]);
 
+  const [reindexing, setReindexing] = useState(false);
+  const reindexProject = useCallback(async () => {
+    setReindexing(true); setError(null);
+    try {
+      const res = await fetch(`/api/projects/${activeId}/reindex`, { method: "POST" });
+      if (!res.ok && res.status !== 409) throw new Error((await res.json()).error || `HTTP ${res.status}`);
+      // poll the chunk stats until nothing is stale any more
+      for (let i = 0; i < 600; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const d = await fetch(`/api/projects/${activeId}/runs`).then(r => r.json());
+        if (d.chunks) setChunkStats(d.chunks);
+        if (!d.chunks || d.chunks.stale === 0) break;
+      }
+    } catch (err) { setError(`Re-index failed: ${err.message}`); }
+    setReindexing(false);
+  }, [activeId]);
+
   const toggleShare = useCallback(async () => {
     const next = !projectMeta.shared;
     const res = await fetch(`/api/projects/${activeId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shared: next }) });
@@ -1495,6 +1512,13 @@ ${passChapters}
                       <h2 className="text-sm font-semibold">Source library</h2>
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-gray-400">{Math.round(corpusText.length/1000)}k chars · {chunkStats.total} chunks</span>
+                        {chunkStats.stale > 0 && (
+                          <button onClick={reindexProject} disabled={reindexing}
+                            title="These chunks were embedded with a different model than the one now configured; search ignores their vectors until re-indexed."
+                            className="text-xs px-2 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg hover:bg-amber-100 disabled:opacity-60">
+                            {reindexing ? "Re-indexing…" : `Re-index ${chunkStats.stale} chunks`}
+                          </button>
+                        )}
                         <button onClick={() => addDocRef.current?.click()} disabled={addingDoc}
                           className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 transition-colors">
                           {addingDoc ? <><Loader size={11} className="animate-spin" /> Processing…</> : <><Plus size={11} /> Add document</>}

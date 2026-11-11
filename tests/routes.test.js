@@ -134,3 +134,25 @@ test("restore puts an old version back as the current draft and records the rest
   as("mallory");
   assert.equal((await post("p1", { action: "restore", methodId: "scenario_modeling", versionId: first.id })).status, 404);
 });
+
+test("compare: lists only the caller's deals, with rubric scores and a sensible shape", async () => {
+  const compare = await import("../app/api/compare/route.js");
+  db.createProject({ id: "c1", name: "Deal One", userId: "carol" });
+  db.createProject({ id: "c2", name: "Deal Two (no report)", userId: "carol" });
+  db.createProject({ id: "c3", name: "Someone else's", userId: "dave" });
+  db.updateProject("c1", "carol", { state: { p0: { venture_name: "One Inc", stage: "seed", classification: { business_model: "b2b" } },
+    docExecSummary: { verdict: "Invest", score: "7.8/10", score_coverage: 0.85, investment_thesis: "t", score_breakdown: [{ id: "market", score: 8 }, { id: "team", score: null }] } } });
+  db.updateProject("c3", "dave", { state: { docExecSummary: { verdict: "Decline", score: "3.0/10", score_breakdown: [] } } });
+
+  as(null);
+  assert.equal((await compare.GET()).status, 401);
+  as("carol");
+  const data = await (await compare.GET()).json();
+  assert.deepEqual(data.deals.map(d => d.id).sort(), ["c1", "c2"], "never includes another user's deals");
+  const one = data.deals.find(d => d.id === "c1");
+  assert.equal(one.name, "One Inc");
+  assert.equal(one.score, 7.8);
+  assert.deepEqual(one.dimensions, { market: 8, team: null });
+  assert.equal(data.deals.find(d => d.id === "c2").hasReport, false);
+  assert.equal(data.dimensions.length, 6);
+});

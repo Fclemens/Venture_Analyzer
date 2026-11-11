@@ -1,5 +1,6 @@
 "use client";
-import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut } from "lucide-react";
+import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut, BarChart3 } from "lucide-react";
+import Link from "next/link";
 import { useUser, useClerk } from "@clerk/nextjs";
 
 function timeAgo(ts) {
@@ -32,6 +33,12 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
           <p className="text-xs font-semibold text-gray-900 leading-none">Venture Analyzer</p>
           <p className="text-xs text-gray-400 mt-0.5">v3</p>
         </div>
+      </div>
+
+      <div className="px-3 pt-2">
+        <Link href="/compare" className="flex items-center gap-2 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg px-3 py-1.5 transition-colors">
+          <BarChart3 size={13} /> Compare deals
+        </Link>
       </div>
 
       {/* New project */}

@@ -187,7 +187,8 @@ export default function Page() {
   const [addingDoc, setAddingDoc] = useState(false);
   const [expandedSourceId, setExpandedSourceId] = useState(null);
 
-  // ── Load project list on mount ─────────────────────────────────────────────────
+  // ── Load project list on mount (and open ?project=<id> deep links) ─────────────
+  const deepLinkRef = useRef(typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("project") : null);
   useEffect(() => {
     fetch("/api/projects").then(r => r.json()).then(setProjects).catch(console.error);
   }, []);
@@ -375,6 +376,14 @@ export default function Page() {
     syncRunsRef.current?.(id, { full: true });
     loadReportRef.current?.(id);
   }, []);
+
+  useEffect(() => {
+    const id = deepLinkRef.current;
+    if (!id) return;
+    deepLinkRef.current = null;
+    handleSelectProject(id);
+    window.history.replaceState(null, "", "/");
+  }, [handleSelectProject]);
 
   // ── New project ────────────────────────────────────────────────────────────────
   const handleNewProject = useCallback(() => {

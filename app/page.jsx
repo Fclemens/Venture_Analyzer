@@ -170,6 +170,7 @@ export default function Page() {
   const activeIdRef = useRef(null);
   const entitiesRef = useRef(null);
   const syncRunsRef = useRef(null);
+  const loadReportRef = useRef(null);
   const [activePass, setActivePass] = useState("p0");
 
   // ── Competitor validation ─────────────────────────────────────────────────────
@@ -334,7 +335,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -372,6 +373,7 @@ export default function Page() {
       progress: "",
     });
     syncRunsRef.current?.(id, { full: true });
+    loadReportRef.current?.(id);
   }, []);
 
   // ── New project ────────────────────────────────────────────────────────────────
@@ -689,47 +691,48 @@ export default function Page() {
     setMethods(prev => prev.map(m => m.id !== methodId ? m : { ...m, decision: { run: "lite", lite: "skip", skip: "run" }[m.decision] }));
   }, []);
 
-  const generateDocument = useCallback(async () => {
-    setDocState({ chapters: {}, execSummary: null, generating: true, progress: "Generating chapters…" });
-    setError(null);
-    try {
-      const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
-      // Generate one chapter per pass that has completed methods
-      const passesToCompile = PASS_DEFS.slice(1).filter(pd => {
-        const pm = methods.filter(m => m.pass === pd.id && methodResults[m.id]);
-        return pm.length > 0;
-      });
-      const chapterResults = await Promise.all(
-        passesToCompile.map(pd => {
-          const pm = methods.filter(m => m.pass === pd.id && methodResults[m.id]);
-          const passMethodResults = Object.fromEntries(pm.map(m => [m.id, methodResults[m.id]]));
-          return pipeline("compile_chapter", {
-            passId: pd.id,
-            passTitle: pd.title,
-            methodResults: passMethodResults,
-            passSummary: passSummaries[pd.id] || null,
-            ventureCtx,
-          });
-        })
-      );
-      const chapters = {};
-      chapterResults.forEach(r => { chapters[r.passId] = r.text; });
-      setDocState(s => ({ ...s, chapters, progress: "Generating executive summary…" }));
+  // ── REPORT (server-side job: survives closing the tab) ─────────────────────────
+  const [snapshots, setSnapshots] = useState([]);
 
-      // Executive summary last — sees all chapters
-      const execSummary = await pipeline("compile_exec", { chapters, ventureCtx, finSummary: describeModel(runModel(finModel?.assumptions, finModel?.scenarios), finModel?.currency ? finModel.currency + " " : "") });
-      setDocState({ chapters, execSummary, generating: false, progress: "" });
-      // Persist so it survives page reload
-      await saveState(activeId, {
-        corpusText, entities, p0, methods,
-        methodNotes, methodSummaries, passSummaries, passSummaryStale,
-        sources, docChapters: chapters, docExecSummary: execSummary,
-      });
+  const loadReport = useCallback(async (projectId) => {
+    const res = await fetch(`/api/projects/${projectId}/report?full=1`);
+    if (!res.ok || projectId !== activeIdRef.current) return;
+    const r = await res.json();
+    setSnapshots(r.snapshots || []);
+    setDocState({ chapters: r.chapters || {}, execSummary: r.execSummary || null, generating: r.status === "running", progress: r.progress || "" });
+    if (r.status === "error" && r.error) setError(`Document generation failed: ${r.error}`);
+  }, []);
+
+  useEffect(() => { loadReportRef.current = loadReport; }, [loadReport]);
+
+  const generateDocument = useCallback(async () => {
+    setError(null);
+    setDocState(st => ({ ...st, generating: true, progress: "Starting…" }));
+    try {
+      // The server builds the report from stored state, so flush anything only held in the browser first
+      await saveState(activeId, { methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, finModel });
+      const res = await fetch(`/api/projects/${activeId}/report`, { method: "POST" });
+      if (!res.ok && res.status !== 409) throw new Error((await res.json()).error || `HTTP ${res.status}`);
     } catch (err) {
       setError(`Document generation failed: ${err.message}`);
-      setDocState(s => ({ ...s, generating: false, progress: "" }));
+      setDocState(st => ({ ...st, generating: false, progress: "" }));
     }
-  }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodNotes, methodSummaries, passSummaryStale, sources, finModel, saveState]);
+  }, [activeId, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, finModel, saveState]);
+
+  // While a report is being written, poll its progress; load it when finished
+  useEffect(() => {
+    if (!activeId || !docState.generating) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/projects/${activeId}/report`);
+        if (!res.ok || activeId !== activeIdRef.current) return;
+        const r = await res.json();
+        if (r.status === "running") setDocState(st => ({ ...st, progress: r.progress || st.progress }));
+        else loadReport(activeId);
+      } catch { /* transient — try again on the next tick */ }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [activeId, docState.generating, loadReport]);
 
   const downloadHTML = useCallback(() => {
     const { chapters, execSummary } = docState;
@@ -1180,6 +1183,27 @@ ${passChapters}
                         <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Recommendation</h3>
                         <p className="text-sm leading-relaxed">{execSummary.recommendation}</p>
                       </div>
+                    )}
+
+                    {/* Report history: how this deal's score has moved */}
+                    {snapshots.length > 1 && (
+                      <details className="bg-white rounded-2xl border border-gray-200 p-5">
+                        <summary className="text-xs font-semibold uppercase tracking-wide text-gray-500 cursor-pointer">Report history · {snapshots.length} reports</summary>
+                        <table className="w-full text-xs mt-3">
+                          <thead><tr className="text-left text-gray-400"><th className="font-medium pb-1">Generated</th><th className="font-medium pb-1">Verdict</th><th className="font-medium pb-1">Score</th><th className="font-medium pb-1">Change</th><th className="font-medium pb-1">What moved</th></tr></thead>
+                          <tbody>
+                            {snapshots.map((sn, i) => (
+                              <tr key={sn.id} className="border-t border-gray-50">
+                                <td className="py-1.5">{new Date(sn.created_at).toLocaleString()}{i === 0 && <span className="text-gray-400"> · latest</span>}</td>
+                                <td>{sn.verdict}</td>
+                                <td>{sn.score ?? "n/a"}</td>
+                                <td>{sn.delta === null ? "—" : sn.delta === 0 ? "no change" : sn.delta > 0 ? `▲ +${sn.delta}` : `▼ ${sn.delta}`}</td>
+                                <td className="text-gray-500">{sn.dimensionChanges?.map(d => `${d.id.replace("_", " ")} ${d.from ?? "n/a"}→${d.to ?? "n/a"}`).join(", ") || ""}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </details>
                     )}
 
                     {/* Questions for the founders */}

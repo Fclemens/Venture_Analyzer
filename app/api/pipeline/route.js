@@ -5,17 +5,15 @@ import {
   METHODOLOGY_REGISTRY,
   getP0DocSystem, getP0ConceptSystem,
   getMethodSummarySystem, getPassSummarySystem,
-  getChapterSystem, getExecutiveSystem, getFinAssumptionsSystem,
+  getFinAssumptionsSystem,
   RECHUNK_SYSTEM,
 } from "@/lib/registry";
 import { embedBatch, chunkText } from "@/lib/embeddings";
 import { parseJSON } from "@/lib/json";
 import { fence, rateLimit } from "@/lib/security";
-import { computeScore } from "@/lib/scoring";
-import { SCORE_DIMENSIONS } from "@/lib/constants";
 import { ASSUMPTION_FIELDS } from "@/lib/finmodel";
 import { insertChunks, chunkStats } from "@/lib/runs";
-import { makeCaller, ventureHeader, TRUNCATION_NOTE } from "@/lib/steps";
+import { makeCaller, ventureHeader, chapterStep, executiveStep } from "@/lib/steps";
 
 // Multi-call steps with web search can run for minutes
 export const maxDuration = 300;
@@ -227,55 +225,14 @@ export async function POST(request) {
       // ── 10. Compile pass chapter ──────────────────────────────────────────────
       case "compile_chapter": {
         const { passId, passTitle, methodResults: passMethodResults, passSummary, ventureCtx } = body;
-        const passDef = { id: passId, title: passTitle };
-        const header = ventureHeader(ventureCtx);
-        const methodsText = Object.entries(passMethodResults)
-          .map(([id, text]) => {
-            const mDef = METHODOLOGY_REGISTRY[id];
-            return `### ${mDef?.name || id}\n\n${text}`;
-          }).join("\n\n---\n\n");
-        const passSummaryText = passSummary
-          ? `\n\nPASS SUMMARY:\nVerdict: ${passSummary.pass_verdict || ""}\nStrongest findings: ${(passSummary.strongest_findings || []).join("; ")}\nKey risks: ${(passSummary.key_risks || []).join("; ")}`
-          : "";
-        const res = await callModelLogged({
-          role: "doc_chapter",
-          system: `${header}${getChapterSystem(passDef, ventureCtx)}`,
-          messages: [{ role: "user", content: `Write the chapter for "${passTitle}" using these methodology results:${passSummaryText}\n\n${fence("methodology results", methodsText.slice(0, 40000))}` }],
-        });
-        return NextResponse.json({ passId, text: res.text + (res.truncated ? TRUNCATION_NOTE : "") });
+        const text = await chapterStep({ call: callModelLogged, passId, passTitle, methodResults: passMethodResults, passSummary, ventureCtx });
+        return NextResponse.json({ passId, text });
       }
 
       // ── 11. Compile executive summary ─────────────────────────────────────────
       case "compile_exec": {
         const { chapters, ventureCtx, finSummary } = body;
-        const header = ventureHeader(ventureCtx);
-        const chaptersText = Object.entries(chapters)
-          .map(([passId, text]) => `## ${passId}\n\n${text}`)
-          .join("\n\n---\n\n");
-        const res = await callModelLogged({
-          role: "doc_exec",
-          json: true,
-          system: `${header}${getExecutiveSystem(ventureCtx)}`,
-          messages: [{ role: "user", content: `Synthesise these analytical chapters into the executive summary:\n\n${fence("chapters", chaptersText.slice(0, 80000))}${finSummary ? `\n\nCOMPUTED FINANCIAL MODEL (deterministic output of the user's assumptions - quote these numbers, do not recompute or contradict them):\n${String(finSummary).slice(0, 4000)}` : ""}` }],
-        });
-
-        // Score and verdict are computed in code. A dimension is forced to null
-        // when none of the passes that inform it were actually run.
-        const ran = new Set(Object.keys(chapters || {}));
-        const dimScores = { ...(res.json.dimension_scores || {}) };
-        for (const d of SCORE_DIMENSIONS) {
-          if (!d.passes.some(p => ran.has(p))) dimScores[d.id] = { score: null, confidence: null, evidence: ["Not assessed - the relevant analysis pass was not run."] };
-        }
-        const computed = computeScore(dimScores);
-        return NextResponse.json({
-          ...res.json,
-          dimension_scores: undefined,
-          score_breakdown: computed.dimensions,
-          score_coverage: computed.coverage,
-          verdict: computed.verdict,
-          score: computed.score,
-          score_rationale: computed.score_rationale,
-        });
+        return NextResponse.json(await executiveStep({ call: callModelLogged, chapters, ventureCtx, finSummary }));
       }
 
       // ── 11b. Propose financial-model assumptions (the model does no arithmetic) ──

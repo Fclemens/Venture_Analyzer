@@ -13,12 +13,13 @@ import { parseJSON } from "@/lib/json";
 import { fence, rateLimit } from "@/lib/security";
 import { ASSUMPTION_FIELDS } from "@/lib/finmodel";
 import { insertChunks, chunkStats } from "@/lib/runs";
+import { typeOf } from "@/lib/filetypes";
+import { extractLocalText } from "@/lib/doc-parse";
 import { makeCaller, ventureHeader, chapterStep, executiveStep } from "@/lib/steps";
 
 // Multi-call steps with web search can run for minutes
 export const maxDuration = 300;
 
-const ALLOWED_MIME = new Set(["application/pdf", "image/png", "image/jpeg"]);
 const MAX_FILE_BASE64 = 28_000_000;   // ≈ 20 MB of binary
 const MAX_CORPUS_CHARS = 2_000_000;
 const MAX_CHUNKS = 3000;
@@ -31,11 +32,36 @@ function requireProject(projectId, userId) {
   if (typeof projectId !== "string" || !projectExists(projectId, userId)) throw new HttpError("Project not found", 404);
 }
 
+// Validates an upload by its file NAME (the extension decides the type; the
+// client-claimed MIME type is not trusted) and returns the type definition.
 function requireFile(body) {
-  const { fileBase64, fileType } = body;
+  const { fileBase64, fileName } = body;
   if (typeof fileBase64 !== "string" || !fileBase64) throw new HttpError("Missing file");
   if (fileBase64.length > MAX_FILE_BASE64) throw new HttpError("File too large (20 MB maximum)", 413);
-  if (!ALLOWED_MIME.has(fileType)) throw new HttpError("Unsupported file type (PDF, PNG or JPEG only)", 415);
+  const type = typeOf(fileName);
+  if (!type) throw new HttpError("Unsupported file type (PDF, images, Word, PowerPoint, Excel, CSV, text)", 415);
+  return type;
+}
+
+// Text of an uploaded document: parsed locally for Office/text files (exact,
+// no model call), transcribed by the fast model for PDFs and images.
+async function readUpload(body, call) {
+  const type = requireFile(body);
+  if (type.kind === "local") {
+    try {
+      return { text: await extractLocalText({ buffer: Buffer.from(body.fileBase64, "base64"), fileName: body.fileName }), truncated: false };
+    } catch (err) {
+      throw new HttpError(`Could not read ${body.fileName}: ${err.message}`, 422);
+    }
+  }
+  const result = await call({
+    role: "fast",
+    system: TEXT_EXTRACT_SYSTEM,
+    messages: [{ role: "user", content: "Transcribe all text from this document." }],
+    file: { base64: body.fileBase64, mimeType: type.mime },
+    maxTokens: 24000,
+  });
+  return { text: result.text, truncated: !!result.truncated };
 }
 
 // Build tagged-chunk objects (with embeddings) from a document's text.
@@ -90,36 +116,22 @@ export async function POST(request) {
 
       // ── 1. Extract text from PDF ──────────────────────────────────────────
       case "ingest": {
-        requireFile(body);
-        const { fileBase64, fileType, fileName, projectId } = body;
+        const { fileName, projectId } = body;
         requireProject(projectId, userId);
-        const result = await callModelLogged({
-          role: "fast",
-          system: TEXT_EXTRACT_SYSTEM,
-          messages: [{ role: "user", content: "Transcribe all text from this document." }],
-          file: { base64: fileBase64, mimeType: fileType },
-          maxTokens: 24000,
-        });
+        const result = await readUpload(body, callModelLogged);
         // Index the full text server-side so every method can retrieve from the
         // whole document. Embeddings stay in the database - never sent to the browser.
         insertChunks(projectId, await indexDocument(result.text, fileName));
-        return NextResponse.json({ text: result.text, chunks: chunkStats(projectId), truncated: !!result.truncated });
+        return NextResponse.json({ text: result.text, chunks: chunkStats(projectId), truncated: result.truncated });
       }
 
       // ── 1b. Ingest additional document into chunks (with embeddings) ──────
       case "ingest_doc": {
-        requireFile(body);
-        const { fileBase64, fileType, fileName, projectId } = body;
+        const { fileName, projectId } = body;
         requireProject(projectId, userId);
 
         // Extract text
-        const ingest = await callModelLogged({
-          role: "fast",
-          system: TEXT_EXTRACT_SYSTEM,
-          messages: [{ role: "user", content: "Transcribe all text from this document." }],
-          file: { base64: fileBase64, mimeType: fileType },
-          maxTokens: 24000,
-        });
+        const ingest = await readUpload(body, callModelLogged);
         const docText = ingest.text;
 
         // Rechunk into tagged data points
@@ -147,7 +159,7 @@ export async function POST(request) {
         const fullChunks = await indexDocument(docText, fileName);
 
         insertChunks(projectId, [...fullChunks, ...newChunks]);
-        return NextResponse.json({ text: docText, chunks: chunkStats(projectId), truncated: !!ingest.truncated });
+        return NextResponse.json({ text: docText, chunks: chunkStats(projectId), truncated: ingest.truncated });
       }
 
       // ── 2. Entity scan ────────────────────────────────────────────────────
@@ -164,19 +176,23 @@ export async function POST(request) {
 
       // ── 3a. P0 from document ──────────────────────────────────────────────
       case "p0_doc": {
-        requireFile(body);
-        const { fileBase64, fileType, userContext, entities, priorityFocus } = body;
+        const { fileName, userContext, entities, priorityFocus, corpusText } = body;
+        // PDFs/images are attached so the model can see charts and layout; for
+        // Office/text files the already-extracted text is sent instead.
+        const type = body.fileBase64 ? requireFile(body) : null;
+        const attach = type?.kind === "model";
         const result = await callModelLogged({
           role: "smart",
           json: true,
           system: getP0DocSystem(userContext, entities, priorityFocus),
-          messages: [{ role: "user", content: "Analyze this pitch deck. Produce the structured JSON classification." }],
-          file: { base64: fileBase64, mimeType: fileType },
+          messages: [{ role: "user", content: attach
+            ? "Analyze this pitch deck. Produce the structured JSON classification."
+            : `Analyze this document (${fileName || "uploaded file"}). Produce the structured JSON classification.\n\n${fence("document", (corpusText || "").slice(0, 60000))}` }],
+          ...(attach ? { file: { base64: body.fileBase64, mimeType: type.mime } } : {}),
         });
         return NextResponse.json(result.json);
       }
 
-      // ── 3b. P0 from concept (web search) ─────────────────────────────────
       case "p0_concept": {
         const { conceptCard, priorityFocus } = body;
         const result = await callModelLogged({

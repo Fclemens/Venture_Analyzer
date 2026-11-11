@@ -15,6 +15,7 @@ import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/li
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { escapeHtml as esc } from "@/lib/security-client";
 import { staleDependents } from "@/lib/staleness";
+import { UPLOAD_PATTERN, ACCEPT_ATTR, typeOf } from "@/lib/filetypes";
 import FinancialModel from "@/components/FinancialModel";
 import { runModel, describeModel } from "@/lib/finmodel";
 
@@ -208,16 +209,15 @@ export default function Page() {
   // ── File handler ───────────────────────────────────────────────────────────────
   const readFiles = useCallback((fileList) => {
     const MAX_BYTES = 20 * 1024 * 1024;
-    const typed = Array.from(fileList).filter(f => /\.(pdf|png|jpg|jpeg)$/i.test(f.name));
+    const typed = Array.from(fileList).filter(f => UPLOAD_PATTERN.test(f.name));
     const accepted = typed.filter(f => f.size <= MAX_BYTES);
     if (typed.length > accepted.length) setError("Some files were skipped: the limit is 20 MB per file.");
-    else if (!typed.length && fileList.length) setError("Only PDF, PNG and JPEG files are supported.");
+    else if (!typed.length && fileList.length) setError("Supported files: PDF, images, Word, PowerPoint, Excel, CSV and text.");
     if (!accepted.length) return;
     Promise.all(accepted.map(f => new Promise(resolve => {
       const reader = new FileReader();
       reader.onload = () => {
-        const ext = f.name.split(".").pop().toLowerCase();
-        resolve({ file: f, base64: reader.result.split(",")[1], mimeType: ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg" });
+        resolve({ file: f, base64: reader.result.split(",")[1], mimeType: typeOf(f.name)?.mime });
       };
       reader.readAsDataURL(f);
     }))).then(loaded => setFiles(prev => {
@@ -310,8 +310,7 @@ export default function Page() {
       const reader = new FileReader();
       const { base64, mimeType } = await new Promise((resolve, reject) => {
         reader.onload = () => {
-          const ext = f.name.split(".").pop().toLowerCase();
-          resolve({ base64: reader.result.split(",")[1], mimeType: ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : "image/jpeg" });
+          resolve({ base64: reader.result.split(",")[1], mimeType: typeOf(f.name)?.mime });
         };
         reader.onerror = reject;
         reader.readAsDataURL(f);
@@ -450,7 +449,7 @@ export default function Page() {
 
         // Step 3: P0 classification — uses primary (first) file for vision + full corpus text
         setLoadingMsg("Classifying venture…");
-        const p0Result = await pipeline("p0_doc", { fileBase64: files[0].base64, fileType: files[0].mimeType, userContext: userCtx, entities: ents, priorityFocus });
+        const p0Result = await pipeline("p0_doc", { fileBase64: files[0].base64, fileType: files[0].mimeType, fileName: files[0].file.name, corpusText: docText, userContext: userCtx, entities: ents, priorityFocus });
         setP0(p0Result);
         const built = buildMethods(p0Result, priorityFocus, pipelineMode);
         setMethods(built);
@@ -933,9 +932,9 @@ ${passChapters}
                       className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${dropDragging ? "border-blue-400 bg-blue-50/40" : "border-gray-200 hover:border-blue-300 hover:bg-blue-50/20"}`}>
                       <Upload size={18} className={`mx-auto mb-1.5 ${dropDragging ? "text-blue-400" : "text-gray-300"}`} />
                       <p className="text-sm text-gray-400">{dropDragging ? "Drop to add" : "Drop files or click to browse"}</p>
-                      <p className="text-xs text-gray-300 mt-0.5">PDF · PNG · JPG — multiple files supported</p>
+                      <p className="text-xs text-gray-300 mt-0.5">PDF · Word · PowerPoint · Excel · CSV · text · images — up to 20 MB each, multiple files supported</p>
                     </div>
-                    <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg" multiple onChange={e => readFiles(e.target.files)} className="hidden" />
+                    <input ref={fileRef} type="file" accept={ACCEPT_ATTR} multiple onChange={e => readFiles(e.target.files)} className="hidden" />
                     {/* File list */}
                     {files.length > 0 && (
                       <ul className="mt-2 space-y-1">
@@ -1438,7 +1437,7 @@ ${passChapters}
                           className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 transition-colors">
                           {addingDoc ? <><Loader size={11} className="animate-spin" /> Processing…</> : <><Plus size={11} /> Add document</>}
                         </button>
-                        <input ref={addDocRef} type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden"
+                        <input ref={addDocRef} type="file" accept={ACCEPT_ATTR} className="hidden"
                           onChange={e => { const f = e.target.files?.[0]; if (f) { addDocument(f); e.target.value = ""; } }} />
                       </div>
                     </div>

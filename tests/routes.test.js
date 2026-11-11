@@ -156,3 +156,28 @@ test("compare: lists only the caller's deals, with rubric scores and a sensible 
   assert.equal(data.deals.find(d => d.id === "c2").hasReport, false);
   assert.equal(data.dimensions.length, 6);
 });
+
+test("pipeline route: unsupported or oversized uploads are rejected before any model call", async () => {
+  const pipeline = await import("../app/api/pipeline/route.js");
+  db.createProject({ id: "pi", name: "pi", userId: "alice" });
+  const call = (body) => pipeline.POST(new Request("http://x/api/pipeline", { method: "POST", body: JSON.stringify(body) }));
+  let fetched = false;
+  const real = globalThis.fetch; globalThis.fetch = async () => { fetched = true; throw new Error("no network in this test"); };
+  try {
+    as("alice");
+    const exe = await call({ step: "ingest", projectId: "pi", fileName: "malware.exe", fileBase64: "QQ==" });
+    assert.equal(exe.status, 415);
+    const spoof = await call({ step: "ingest", projectId: "pi", fileName: "x.exe", fileType: "application/pdf", fileBase64: "QQ==" });
+    assert.equal(spoof.status, 415, "extension decides, the claimed MIME type is ignored");
+    const big = await call({ step: "ingest", projectId: "pi", fileName: "big.pdf", fileBase64: "A".repeat(28_000_001) });
+    assert.equal(big.status, 413);
+    as("mallory");
+    const stranger = await call({ step: "ingest", projectId: "pi", fileName: "a.txt", fileBase64: Buffer.from("hi").toString("base64") });
+    assert.equal(stranger.status, 404);
+    as("alice");
+    const corrupt = await call({ step: "ingest", projectId: "pi", fileName: "bad.docx", fileBase64: Buffer.from("not a zip").toString("base64") });
+    assert.equal(corrupt.status, 422);
+    assert.match((await corrupt.json()).error, /Could not read bad\.docx/);
+    assert.equal(fetched, false, "no provider call is made for rejected or locally parsed files");
+  } finally { globalThis.fetch = real; }
+});

@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { getProject, updateProject, deleteProject } from "@/lib/db";
+import { updateProject, deleteProject } from "@/lib/db";
+import { loadProjectForClient } from "@/lib/runs";
 
 export async function GET(_, { params }) {
   try {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
-    const project = getProject(id, userId);
+    const project = loadProjectForClient(id, userId); // migrates legacy blobs, merges web sources
     if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(project);
   } catch (err) {

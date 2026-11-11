@@ -1,20 +1,20 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { getSettings, logEvent } from "@/lib/db";
-import { callModel } from "@/lib/llm";
+import { getSettings, projectExists } from "@/lib/db";
 import {
   METHODOLOGY_REGISTRY,
   getP0DocSystem, getP0ConceptSystem,
-  getExtractSystem, getExecuteSystem, RECHUNK_SYSTEM,
-  getReviseSystem, getMethodSummarySystem, getPassSummarySystem,
+  getMethodSummarySystem, getPassSummarySystem,
   getChapterSystem, getExecutiveSystem,
-  buildExtractContext,
+  RECHUNK_SYSTEM,
 } from "@/lib/registry";
-import { embedBatch, hybridRetrieve, chunkText } from "@/lib/embeddings";
+import { embedBatch, chunkText } from "@/lib/embeddings";
 import { parseJSON } from "@/lib/json";
 import { fence, rateLimit } from "@/lib/security";
 import { computeScore } from "@/lib/scoring";
 import { SCORE_DIMENSIONS } from "@/lib/constants";
+import { insertChunks, chunkStats } from "@/lib/runs";
+import { makeCaller, ventureHeader, TRUNCATION_NOTE } from "@/lib/steps";
 
 // Multi-call steps with web search can run for minutes
 export const maxDuration = 300;
@@ -28,14 +28,16 @@ class HttpError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
 
+function requireProject(projectId, userId) {
+  if (typeof projectId !== "string" || !projectExists(projectId, userId)) throw new HttpError("Project not found", 404);
+}
+
 function requireFile(body) {
   const { fileBase64, fileType } = body;
   if (typeof fileBase64 !== "string" || !fileBase64) throw new HttpError("Missing file");
   if (fileBase64.length > MAX_FILE_BASE64) throw new HttpError("File too large (20 MB maximum)", 413);
   if (!ALLOWED_MIME.has(fileType)) throw new HttpError("Unsupported file type (PDF, PNG or JPEG only)", 415);
 }
-
-const TRUNCATION_NOTE = "\n\n> ⚠ **This output hit the model's length limit and may be incomplete.** Re-run, or choose a model with a larger output window in Settings.";
 
 // Build tagged-chunk objects (with embeddings) from a document's text.
 // Deterministic chunking: the whole document is searchable, nothing is cut off.
@@ -63,15 +65,6 @@ const TEXT_EXTRACT_SYSTEM = `Read the uploaded document and transcribe ALL text 
 const ENTITY_SCAN_SYSTEM = `Scan the document text and list all named entities. Respond with JSON only:
 {"startup_name":"","competitors":[],"partners":[],"markets":[],"people":[],"products":[],"regulatory_bodies":[]}`;
 
-// Build compact venture header injected into every extract/execute call
-function ventureHeader(ventureCtx) {
-  if (!ventureCtx?.venture_name) return "";
-  const c = ventureCtx.classification || {};
-  return `VENTURE: ${ventureCtx.venture_name} | ${c.business_model?.toUpperCase() || "?"} | ${ventureCtx.stage || "?"}
-SUMMARY: ${ventureCtx.venture_summary || ""}
-`;
-}
-
 export async function POST(request) {
   try {
     const { userId } = await auth();
@@ -92,52 +85,15 @@ export async function POST(request) {
       throw new HttpError("Your saved settings could not be decrypted (the server ENCRYPTION_KEY probably changed). Re-enter your API keys in Settings.", 409);
     }
 
-    // Logged wrapper — records every LLM call with step, model and real token usage.
-    //   json: true → output is parsed (one corrective retry on bad/truncated JSON)
-    //                and returned as result.json
-    async function callModelLogged({ json = false, ...args }) {
-      const roleConfig = settings.roles?.[args.role];
-      const logCall = (r) => logEvent({
-        userId,
-        eventType: "pipeline_call",
-        step,
-        model: roleConfig?.model || args.role,
-        inputText:  args.messages?.map(m => typeof m.content === "string" ? m.content : "").join("") || "",
-        outputText: r.text || "",
-        usage: r.usage,
-      });
-
-      let result = await callModel(args, settings);
-      logCall(result);
-      if (!json) return result;
-
-      try {
-        return { ...result, json: parseJSON(result.text) };
-      } catch (firstErr) {
-        const retry = await callModel({
-          ...args,
-          maxTokens: result.truncated ? Math.min((args.maxTokens || 16000) * 2, 32000) : args.maxTokens,
-          messages: [
-            ...args.messages,
-            { role: "assistant", content: (result.text || "").slice(0, 4000) },
-            { role: "user", content: "Your previous reply was not valid, complete JSON. Reply again with ONLY the complete JSON object, no commentary." },
-          ],
-        }, settings);
-        logCall(retry);
-        try {
-          return { ...retry, json: parseJSON(retry.text) };
-        } catch {
-          throw new Error(`The model returned invalid JSON twice (${firstErr.message}). Try again or switch model in Settings.`);
-        }
-      }
-    }
+    const callModelLogged = makeCaller({ userId, settings, step });
 
     switch (step) {
 
       // ── 1. Extract text from PDF ──────────────────────────────────────────
       case "ingest": {
         requireFile(body);
-        const { fileBase64, fileType, fileName } = body;
+        const { fileBase64, fileType, fileName, projectId } = body;
+        requireProject(projectId, userId);
         const result = await callModelLogged({
           role: "fast",
           system: TEXT_EXTRACT_SYSTEM,
@@ -145,15 +101,17 @@ export async function POST(request) {
           file: { base64: fileBase64, mimeType: fileType },
           maxTokens: 24000,
         });
-        // Index the full text so every method can retrieve from the whole document
-        const chunks = await indexDocument(result.text, fileName);
-        return NextResponse.json({ text: result.text, chunks, truncated: !!result.truncated });
+        // Index the full text server-side so every method can retrieve from the
+        // whole document. Embeddings stay in the database - never sent to the browser.
+        insertChunks(projectId, await indexDocument(result.text, fileName));
+        return NextResponse.json({ text: result.text, chunks: chunkStats(projectId), truncated: !!result.truncated });
       }
 
       // ── 1b. Ingest additional document into chunks (with embeddings) ──────
       case "ingest_doc": {
         requireFile(body);
-        const { fileBase64, fileType, fileName } = body;
+        const { fileBase64, fileType, fileName, projectId } = body;
+        requireProject(projectId, userId);
 
         // Extract text
         const ingest = await callModelLogged({
@@ -189,7 +147,8 @@ export async function POST(request) {
         }
         const fullChunks = await indexDocument(docText, fileName);
 
-        return NextResponse.json({ text: docText, chunks: [...fullChunks, ...newChunks], truncated: !!ingest.truncated });
+        insertChunks(projectId, [...fullChunks, ...newChunks]);
+        return NextResponse.json({ text: docText, chunks: chunkStats(projectId), truncated: !!ingest.truncated });
       }
 
       // ── 2. Entity scan ────────────────────────────────────────────────────
@@ -231,77 +190,6 @@ export async function POST(request) {
         return NextResponse.json(result.json);
       }
 
-      // ── 4. Extract evidence (hybrid retrieval) ────────────────────────────
-      case "extract": {
-        const { methodologyId, corpusText, entities, webChunks, priorOutputs, methodSummaries, ventureCtx } = body;
-        const mDef = METHODOLOGY_REGISTRY[methodologyId];
-        if (!mDef) return NextResponse.json({ error: "Unknown methodology" }, { status: 400 });
-
-        // Hybrid retrieval: tag filter ∪ vector search
-        const hybridChunks = (webChunks?.length)
-          ? await hybridRetrieve(mDef.extract_query, webChunks, mDef.entity_filter, mDef.data_type_filter, 30)
-          : [];
-
-        const context = buildExtractContext(mDef, corpusText, hybridChunks, priorOutputs, methodSummaries || {});
-        const header = ventureHeader(ventureCtx);
-
-        const result = await callModelLogged({
-          role: "fast",
-          json: true,
-          system: `${header}${getExtractSystem(mDef, entities)}`,
-          messages: [{ role: "user", content: `${context}\n\nExtract evidence for "${mDef.name}".` }],
-        });
-        return NextResponse.json(result.json);
-      }
-
-      // ── 5. Execute methodology ────────────────────────────────────────────
-      case "execute": {
-        const { methodologyId, evidenceBundle, ventureCtx, userNotes } = body;
-        const mDef = METHODOLOGY_REGISTRY[methodologyId];
-        if (!mDef) return NextResponse.json({ error: "Unknown methodology" }, { status: 400 });
-        const header = ventureHeader(ventureCtx);
-        const result = await callModelLogged({
-          role: "smart",
-          system: `${header}${getExecuteSystem(mDef, ventureCtx)}`,
-          messages: [{ role: "user", content: `EVIDENCE BUNDLE:\n${fence("evidence bundle", JSON.stringify(evidenceBundle, null, 2))}\n\n${userNotes ? `USER NOTES:\n${userNotes}\n\n` : ""}Execute the "${mDef.name}" methodology. Use web search to fill gaps.` }],
-          useSearch: true,
-        });
-        return NextResponse.json({ text: result.text + (result.truncated ? TRUNCATION_NOTE : ""), searchResults: result.searchResults, truncated: !!result.truncated });
-      }
-
-      // ── 6. Rechunk web results (with embeddings) ──────────────────────────
-      case "rechunk": {
-        const { searchResults, methodologyId } = body;
-        if (!searchResults?.length) return NextResponse.json([]);
-        const searchText = searchResults
-          .filter(r => r.text?.length > 50)
-          .map((r, i) => `[Source ${i}: ${r.title}]\nURL: ${r.url}\n${r.text}`)
-          .join("\n\n---\n\n")
-          .slice(0, 40000); // cap total input to fast model
-        if (!searchText.trim()) return NextResponse.json([]);
-
-        const result = await callModelLogged({
-          role: "fast",
-          system: RECHUNK_SYSTEM,
-          messages: [{ role: "user", content: `Web search results from "${methodologyId}". Extract and tag useful data points.\n\n${fence("web search results", searchText)}` }],
-        });
-
-        let chunks = [];
-        try { chunks = parseJSON(result.text); } catch { chunks = []; }
-
-        const tagged = chunks.map(c => ({
-          ...c, source_type: "web_search", retrieved_by: methodologyId, ingested_at: new Date().toISOString(),
-        }));
-
-        // Embed all chunks
-        if (tagged.length > 0) {
-          const embeddings = await embedBatch(tagged.map(c => c.text));
-          tagged.forEach((c, i) => { c.embedding = embeddings[i]; });
-        }
-
-        return NextResponse.json(tagged);
-      }
-
       // ── 7. Method summary (after approve) ────────────────────────────────
       case "summarise": {
         const { methodologyId, result: analysisText, ventureCtx } = body;
@@ -333,30 +221,6 @@ export async function POST(request) {
           messages: [{ role: "user", content: `Synthesise the following methodology analyses for pass "${passTitle}":\n\n${fence("methodology analyses", combinedResults)}` }],
         });
         return NextResponse.json({ passId, ...res.json });
-      }
-
-      // ── 9. Revise existing analysis ───────────────────────────────────────
-      case "revise": {
-        const { methodologyId, evidenceBundle, priorResult, userNotes, ventureCtx, webChunks } = body;
-        const mDef = METHODOLOGY_REGISTRY[methodologyId];
-        if (!mDef) return NextResponse.json({ error: "Unknown methodology" }, { status: 400 });
-
-        // Hybrid-retrieve any new chunks relevant to this methodology
-        const hybridChunks = (webChunks?.length)
-          ? await hybridRetrieve(mDef.extract_query, webChunks, mDef.entity_filter, mDef.data_type_filter, 30)
-          : [];
-        const newEvidenceSection = hybridChunks.length
-          ? `\n\nNEW EVIDENCE FROM ADDITIONAL DOCUMENTS:\n${fence("additional evidence", hybridChunks.map((c, i) => `[New${i}] ${c.entity}|${c.data_type}|via:${c.retrieved_by}\n${c.text}`).join("\n\n"))}`
-          : "";
-
-        const header = ventureHeader(ventureCtx);
-        const res = await callModelLogged({
-          role: "smart",
-          system: `${header}${getReviseSystem(mDef, ventureCtx)}`,
-          messages: [{ role: "user", content: `PRIOR DRAFT:\n${priorResult}\n\nEVIDENCE BUNDLE:\n${fence("evidence bundle", JSON.stringify(evidenceBundle, null, 2))}${newEvidenceSection}\n\n${userNotes ? `USER NOTES:\n${userNotes}\n\n` : ""}Revise the analysis. Use web search if needed.` }],
-          useSearch: true,
-        });
-        return NextResponse.json({ text: res.text + (res.truncated ? TRUNCATION_NOTE : ""), searchResults: res.searchResults, truncated: !!res.truncated });
       }
 
       // ── 10. Compile pass chapter ──────────────────────────────────────────────

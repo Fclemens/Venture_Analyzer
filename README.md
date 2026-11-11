@@ -46,10 +46,25 @@ npm run build
 - Uploaded files are sent to the provider the user chose; with OpenAI the temporary upload is deleted right after use.
 - `user.deleted` webhook removes a user's projects, keys and usage history.
 
-## Known limitations / roadmap
+## Architecture
 
-- Pipeline orchestration and state live in the browser (`app/page.jsx`); closing the tab stops a run and concurrent tabs/parallel saves can overwrite each other. Planned: server-side durable jobs + relational storage (Postgres/pgvector) instead of one JSON blob per project.
-- SQLite + local model cache require a persistent disk (not serverless).
+```
+Browser (app/page.jsx)             Next.js server                         SQLite (.data/venture.db)
+  setup, review, report   ──►  /api/projects/:id/runs  ──► job queue ──►  jobs
+  queues work + polls            (lib/jobs.js worker pool)                 method_runs, run_versions
+                                 lib/job-handlers.js ► lib/steps.js        chunks (+ embeddings), web_sources
+                                 lib/llm.js (Anthropic / OpenAI / Gemini)  projects (small JSON blob), settings, usage
+```
+
+- **Method runs are server-side durable jobs.** The browser queues *extract / execute / revise* and polls a lightweight status endpoint; closing the tab does not stop a run. Independent methods run in parallel (`PIPELINE_CONCURRENCY`, with a per-user cap), and jobs that were running when the server stopped are re-queued on start (`instrumentation.ts`).
+- **State lives in tables, not in the browser.** `method_runs` (status, evidence, latest result, version counter), `run_versions` (every execute/revise output - full history), `chunks` (document + web evidence with embeddings; retrieval happens in the server, nothing but counts goes to the browser), `web_sources`, `jobs`. The `projects.state` JSON now only holds small setup data (P0, entities, notes, summaries, report). Saves are merged, and the keys that moved to tables are ignored, so a stale tab can't overwrite them.
+- **Existing projects migrate automatically** the first time they're opened.
+- All SQL for this is in `lib/runs.js`, so moving to Postgres + pgvector later is a contained change.
+
+## Limitations / roadmap
+
+- The worker runs inside the Next.js server process, so it needs a long-lived Node host with a persistent disk (not serverless). The queue is already in the database; moving execution to a separate worker process or a managed workflow service means replacing `pump()` in `lib/jobs.js`. SQLite is single-writer, so multiple server instances need Postgres first.
+- P0 scoping, summaries and report compilation are still driven by the browser (short, user-initiated calls).
 - Unit economics and scenarios are still model-written prose; a calculated model with editable assumptions is planned.
 - Web search is the only external data source; registries, funding, patent and traffic data connectors are not built.
-- No team workspaces, version history/diffing, or Word/Excel export yet.
+- No team workspaces, version-history UI (the data is stored), or Word/Excel export yet.

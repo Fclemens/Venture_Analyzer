@@ -156,7 +156,13 @@ export default function Page() {
   const [passSummaryStale, setPassSummaryStale] = useState({}); // { [passId]: true } when stale
   const [docState, setDocState] = useState({ chapters: {}, execSummary: null, generating: false, progress: "" });
   const [sources, setSources] = useState([]);
-  const [chunks, setChunks] = useState([]);
+  // Searchable evidence chunks (and their embeddings) live on the server; the
+  // browser only keeps counts for display.
+  const [chunkStats, setChunkStats] = useState({ total: 0, web: 0, document: 0 });
+  const runVersions = useRef({});   // last seen version per method run (cheap change detection)
+  const activeIdRef = useRef(null);
+  const entitiesRef = useRef(null);
+  const syncRunsRef = useRef(null);
   const [activePass, setActivePass] = useState("p0");
 
   // ── Competitor validation ─────────────────────────────────────────────────────
@@ -229,29 +235,36 @@ export default function Page() {
     return selections;
   }, []);
 
-  // ── Remove a source and its associated chunks ─────────────────────────────────
+  // ── Remove a source and its associated chunks (server-side) ───────────────────
   const removeSource = useCallback(async (sourceId) => {
     const source = sources.find(s => s.id === sourceId);
-    if (!source) return;
+    if (!source || !activeId) return;
+    const isWeb = source.type === "web_discovered";
+    try {
+      const qs = new URLSearchParams(isWeb ? { id: sourceId } : { id: sourceId, name: source.name });
+      const res = await fetch(`/api/projects/${activeId}/sources?${qs}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setChunkStats((await res.json()).chunks);
+    } catch (err) {
+      setError(`Could not remove source: ${err.message}`);
+      return;
+    }
     const newSources = sources.filter(s => s.id !== sourceId);
-    // Remove chunks that came from this source (by name match for additional_doc, or source_url for web)
-    const newChunks = chunks.filter(c => c.retrieved_by !== source.name);
     // Remove source text from corpus (best effort — strip the appended block)
     const newCorpus = source.rawText
       ? corpusText.replace(`\n\n---\n\n${source.rawText}`, "").replace(source.rawText, "")
       : corpusText;
     setSources(newSources);
-    setChunks(newChunks);
     setCorpusText(newCorpus);
-    await saveState(activeId, { corpusText: newCorpus, entities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, sources: newSources, chunks: newChunks });
-  }, [sources, chunks, corpusText, activeId, entities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, saveState]);
+    await saveState(activeId, { corpusText: newCorpus, entities, p0, methods, methodNotes, sources: newSources });
+  }, [sources, corpusText, activeId, entities, p0, methods, methodNotes, saveState]);
 
   // ── Add additional document to source library ──────────────────────────────────
   // ── Update entities and persist ──────────────────────────────────────────────
   const updateEntities = useCallback(async (newEntities) => {
     setEntities(newEntities);
-    await saveState(activeId, { corpusText, entities: newEntities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks });
-  }, [activeId, corpusText, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks, saveState]);
+    await saveState(activeId, { corpusText, entities: newEntities, p0, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources });
+  }, [activeId, corpusText, p0, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, saveState]);
 
   // ── Validate & clean competitor list via LLM + web search ────────────────────
   const validateCompetitors = useCallback(async () => {
@@ -266,7 +279,7 @@ export default function Page() {
       const cleanList = [...(result.validated || []), ...(result.added || [])];
       const newEntities = { ...entities, competitors: cleanList };
       setEntities(newEntities);
-      await saveState(activeId, { corpusText, entities: newEntities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks });
+      await saveState(activeId, { corpusText, entities: newEntities, p0, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources });
       // Build a short summary note for the user
       const removedCount = (result.removed || []).length;
       const addedCount = (result.added || []).length;
@@ -278,7 +291,7 @@ export default function Page() {
       setTimeout(() => setCompetitorValidationNote(null), 5000);
     }
     setCompetitorValidating(false);
-  }, [p0, entities, corpusText, competitorValidating, activeId, methods, methodStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks, saveState]);
+  }, [p0, entities, corpusText, competitorValidating, activeId, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, saveState]);
 
   const addDocument = useCallback(async (f) => {
     if (!f || !activeId) return;
@@ -294,28 +307,27 @@ export default function Page() {
         reader.onerror = reject;
         reader.readAsDataURL(f);
       });
-      const result = await pipeline("ingest_doc", { fileBase64: base64, fileType: mimeType, fileName: f.name, existingChunks: chunks });
+      const result = await pipeline("ingest_doc", { fileBase64: base64, fileType: mimeType, fileName: f.name, projectId: activeId });
       if (result.truncated) setError(`Warning: ${f.name} is very long and its text was cut at the model's output limit.`);
       const newSource = { id: crypto.randomUUID(), type: "document", name: f.name, rawText: result.text, addedAt: new Date().toISOString() };
       const newSources = [...sources, newSource];
-      const newChunks = [...chunks, ...(result.chunks || [])];
       const newCorpus = corpusText + "\n\n---\n\n" + result.text;
       setSources(newSources);
-      setChunks(newChunks);
+      if (result.chunks) setChunkStats(result.chunks);
       setCorpusText(newCorpus);
-      await saveState(activeId, { corpusText: newCorpus, entities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, sources: newSources, chunks: newChunks });
+      await saveState(activeId, { corpusText: newCorpus, entities, p0, methods, methodNotes, sources: newSources });
     } catch (err) {
       setError(`Failed to add document: ${err.message}`);
     }
     setAddingDoc(false);
-  }, [activeId, chunks, sources, corpusText, entities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, saveState]);
+  }, [activeId, sources, corpusText, entities, p0, methods, methodNotes, saveState]);
 
   // ── Reset pipeline state ────────────────────────────────────────────────────────
   const resetPipeline = useCallback(() => {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunks([]); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -325,29 +337,23 @@ export default function Page() {
     const res = await fetch(`/api/projects/${id}`);
     if (!res.ok) { setError(`Failed to load project (${res.status})`); return; }
     const project = await res.json();
+    activeIdRef.current = id; // synchronous: the first runs sync must not be dropped as "wrong project"
     setActiveId(id);
     const s = project.state || {};
     setCorpusText(s.corpusText || "");
     setEntities(s.entities || null);
     setP0(s.p0 || null);
     setMethods(s.methods || []);
-    // Sanitize in-flight statuses (executing/extracting saved mid-run) back to stable states
-    const rawStatus = s.methodStatus || {};
-    const sanitized = {};
-    Object.entries(rawStatus).forEach(([id, st]) => {
-      if (st === "executing") sanitized[id] = s.methodResults?.[id] ? "review" : s.evidenceBundles?.[id] ? "extracted" : "error";
-      else if (st === "extracting") sanitized[id] = s.evidenceBundles?.[id] ? "extracted" : "error";
-      else sanitized[id] = st;
-    });
-    setMethodStatus(sanitized);
-    setEvidenceBundles(s.evidenceBundles || {});
-    setMethodResults(s.methodResults || {});
+    // Method statuses, evidence and results are owned by the server (they keep
+    // updating while no tab is open) — load them from the runs API.
+    setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
+    runVersions.current = {};
     setMethodNotes(s.methodNotes || {});
     setMethodSummaries(s.methodSummaries || {});
     setPassSummaries(s.passSummaries || {});
     setPassSummaryStale(s.passSummaryStale || {});
     setSources(s.sources || []);
-    setChunks(s.chunks || []);
+    setChunkStats(project.chunkStats || { total: 0, web: 0, document: 0 });
     setEntryMode(project.entry_mode || "document");
     setScreen(s.p0 ? "pipeline" : "setup");
     setActivePass("p0");
@@ -357,10 +363,12 @@ export default function Page() {
       generating: false,
       progress: "",
     });
+    syncRunsRef.current?.(id, { full: true });
   }, []);
 
   // ── New project ────────────────────────────────────────────────────────────────
   const handleNewProject = useCallback(() => {
+    activeIdRef.current = null;
     setActiveId(null);
     resetPipeline();
     setFiles([]);
@@ -389,6 +397,7 @@ export default function Page() {
         body: JSON.stringify({ name, entryMode }),
       });
       const project = await pRes.json();
+      activeIdRef.current = project.id;
       setActiveId(project.id);
       setProjects(prev => [project, ...prev]);
 
@@ -399,11 +408,10 @@ export default function Page() {
         // Step 1: ingest all files — primary first, then additional
         setLoadingMsg(`Reading ${files.length > 1 ? `${files.length} documents` : "document"}…`);
         const ingestResults = await Promise.all(
-          files.map(f => pipeline("ingest", { fileBase64: f.base64, fileType: f.mimeType, fileName: f.file.name }))
+          files.map(f => pipeline("ingest", { fileBase64: f.base64, fileType: f.mimeType, fileName: f.file.name, projectId: project.id }))
         );
-        // Whole-document chunks (with embeddings) so every method can retrieve from all pages
-        const docChunks = ingestResults.flatMap(r => r.chunks || []);
-        setChunks(docChunks);
+        // The server indexed every page (chunks + embeddings stay in its database)
+        setChunkStats(ingestResults.map(r => r.chunks).filter(Boolean).sort((a, b) => b.total - a.total)[0] || { total: 0, web: 0, document: 0 });
         const cut = ingestResults.map((r, i) => r.truncated ? files[i].file.name : null).filter(Boolean);
         if (cut.length) setError(`Warning: ${cut.join(", ")} is very long and its text was cut at the model's output limit. Later pages may be missing from the analysis.`);
         // Concatenate all text, separated by a clear divider
@@ -429,7 +437,7 @@ export default function Page() {
         setMethods(built);
 
         const projectName = p0Result.venture_name || name;
-        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources, chunks: docChunks });
+        await saveState(project.id, { corpusText: docText, entities: ents, p0: p0Result, methods: built, sources: initialSources });
         await fetch(`/api/projects/${project.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "running", name: projectName }) });
         setProjects(prev => prev.map(p => p.id === project.id ? { ...p, name: projectName } : p));
 
@@ -461,91 +469,125 @@ export default function Page() {
     setLoading(false);
   }, [entryMode, files, conceptCard, userCtx, priorityFocus, pipelineMode, buildMethods, resetPipeline, saveState]);
 
-  // ── EXTRACT ─────────────────────────────────────────────────────────────────────
-  const runExtract = useCallback(async (methodId) => {
-    setMethodLoading(p => ({ ...p, [methodId]: true }));
-    setMethodStatus(p => ({ ...p, [methodId]: "extracting" }));
-    setError(null);
-    try {
-      const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
-      const evidence = await pipeline("extract", { methodologyId: methodId, corpusText, entities, webChunks: chunks, priorOutputs: methodResults, methodSummaries, ventureCtx });
-      // Use functional setter to merge into latest state — avoids clobbering during Extract all
-      let eb;
-      setEvidenceBundles(prev => { eb = { ...prev, [methodId]: evidence }; return eb; });
-      setMethodStatus(p => ({ ...p, [methodId]: "extracted" }));
-      await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: { ...methodStatus, [methodId]: "extracted" }, evidenceBundles: eb, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources, chunks });
-    } catch (err) {
-      setError(`Extract failed (${methodId}): ${err.message}`);
-      setMethodStatus(p => ({ ...p, [methodId]: "error" }));
-    }
-    setMethodLoading(p => ({ ...p, [methodId]: false }));
-  }, [corpusText, entities, chunks, methodResults, evidenceBundles, activeId, p0, methods, methodStatus, methodNotes, sources, saveState]);
+  // ── SERVER-SIDE RUNS ────────────────────────────────────────────────────────────
+  // Extract / execute / revise run on the server as durable jobs: the browser
+  // queues them and polls. Closing the tab does not stop a run, independent
+  // methods run in parallel, and evidence, results and embeddings never travel
+  // through the browser.
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { entitiesRef.current = entities; }, [entities]);
 
-  // ── EXECUTE ─────────────────────────────────────────────────────────────────────
-  const runExecute = useCallback(async (methodId) => {
-    const evidence = evidenceBundles[methodId];
-    if (!evidence) {
-      // Evidence missing despite "extracted" status — reset so user can re-extract
-      setMethodStatus(p => ({ ...p, [methodId]: "error" }));
+  // Fold competitor names the server discovered into the entity list (idempotent)
+  const mergeCompetitors = useCallback((names) => {
+    if (!names?.length) return;
+    const cur = entitiesRef.current || {};
+    const existing = cur.competitors || [];
+    const fresh = [...new Set(names)].filter(n => !existing.includes(n));
+    if (!fresh.length) return;
+    const merged = { ...cur, competitors: [...existing, ...fresh] };
+    entitiesRef.current = merged;
+    setEntities(merged);
+    if (activeIdRef.current) saveState(activeIdRef.current, { entities: merged });
+  }, [saveState]);
+
+  const syncRuns = useCallback(async (projectId, { full = false } = {}) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/runs${full ? "?full=1" : ""}`);
+      if (!res.ok || projectId !== activeIdRef.current) return;
+      const data = await res.json();
+      if (data.chunks) setChunkStats(data.chunks);
+
+      if (full) {
+        const st = {}, ev = {}, rs = {};
+        for (const [mid, r] of Object.entries(data.runs)) {
+          st[mid] = r.status;
+          if (r.evidence) ev[mid] = r.evidence;
+          if (r.result != null) rs[mid] = r.result;
+          runVersions.current[mid] = r.version;
+        }
+        setMethodStatus(st); setEvidenceBundles(ev); setMethodResults(rs);
+        return;
+      }
+
+      const settled = [];
+      setMethodStatus(prev => {
+        const next = { ...prev };
+        for (const [mid, r] of Object.entries(data.runs)) {
+          next[mid] = r.status;
+          if (runVersions.current[mid] !== r.version) {
+            runVersions.current[mid] = r.version;
+            if (r.status !== "extracting" && r.status !== "executing") settled.push([mid, r]);
+          }
+        }
+        return next;
+      });
+      // Pull the full record only for runs that just finished
+      await Promise.all(settled.map(async ([mid, r]) => {
+        if (r.status === "error") { setError(`${METHODOLOGY_REGISTRY[mid]?.name || mid} failed: ${r.error || "unknown error"}`); return; }
+        const detail = await fetch(`/api/projects/${projectId}/runs?method=${mid}`).then(x => x.json());
+        if (projectId !== activeIdRef.current || !detail.run) return;
+        if (detail.run.evidence) setEvidenceBundles(p => ({ ...p, [mid]: detail.run.evidence }));
+        if (detail.run.result != null) setMethodResults(p => ({ ...p, [mid]: detail.run.result }));
+        if (detail.webSources?.length) {
+          setSources(p => { const have = new Set(p.map(x => x.id)); return [...p, ...detail.webSources.filter(w => !have.has(w.id))]; });
+        }
+        if (detail.chunks) setChunkStats(detail.chunks);
+        mergeCompetitors(detail.run.new_competitors);
+      }));
+    } catch (e) { console.warn("Run sync failed:", e.message); }
+  }, [mergeCompetitors]);
+  useEffect(() => { syncRunsRef.current = syncRuns; }, [syncRuns]);
+
+  // Poll only while something is in flight
+  useEffect(() => {
+    if (!activeId) return;
+    const inflight = Object.values(methodStatus).some(st => st === "extracting" || st === "executing");
+    if (!inflight) return;
+    const t = setInterval(() => syncRuns(activeId), 2500);
+    return () => clearInterval(t);
+  }, [activeId, methodStatus, syncRuns]);
+
+  const queueRun = useCallback(async (methodId, action, notes = "") => {
+    if (!activeId) return;
+    setError(null);
+    setMethodStatus(p => ({ ...p, [methodId]: action === "extract" ? "extracting" : "executing" }));
+    try {
+      const res = await fetch(`/api/projects/${activeId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, methodId, notes }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      runVersions.current[methodId] = data.run?.version;
+    } catch (err) {
+      setError(`${action} failed (${methodId}): ${err.message}`);
+      syncRuns(activeId, { full: true }); // restore the true server-side status
+    }
+  }, [activeId, syncRuns]);
+
+  const runExtract = useCallback((methodId) => queueRun(methodId, "extract"), [queueRun]);
+  const runExecute = useCallback((methodId) => {
+    if (!evidenceBundles[methodId]) {
       setError(`Evidence bundle missing for ${methodId} — please re-extract`);
       return;
     }
-    setMethodLoading(p => ({ ...p, [methodId]: true }));
-    setMethodStatus(p => ({ ...p, [methodId]: "executing" }));
-    setError(null);
-    try {
-      const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
-      const { text, searchResults } = await pipeline("execute", { methodologyId: methodId, evidenceBundle: evidence, ventureCtx, userNotes: methodNotes[methodId] || "" });
-
-      // Functional setters — safe for concurrent executions
-      let mr;
-      setMethodResults(prev => { mr = { ...prev, [methodId]: text }; return mr; });
-      let newStatus;
-      setMethodStatus(prev => { newStatus = { ...prev, [methodId]: "review" }; return newStatus; });
-
-      // Derive web sources from raw search results (reliable URL/title)
-      let newChunks;
-      setChunks(prev => { newChunks = prev; return prev; });
-      let newSources;
-      setSources(prev => { newSources = prev; return prev; });
-
-      if (searchResults?.length) {
-        const webSources = searchResults
-          .filter(r => r.url)
-          .map(r => ({ id: crypto.randomUUID(), type: "web_discovered", name: r.url.replace(/^https?:\/\//, "").slice(0, 60), rawText: r.text || r.title || r.url, entities: null, retrievedBy: methodId, addedAt: new Date().toISOString() }));
-        if (webSources.length) {
-          setSources(prev => { newSources = [...prev, ...webSources]; return newSources; });
-        }
-        // Rechunk for vector store + auto-extract new competitors
-        try {
-          const rechunked = await pipeline("rechunk", { searchResults, methodologyId: methodId });
-          if (rechunked.length) {
-            setChunks(prev => { newChunks = [...prev, ...rechunked]; return newChunks; });
-            // Pull competitor names from entity tags (e.g. "competitor:Acme Corp")
-            const found = rechunked
-              .filter(c => typeof c.entity === "string" && c.entity.toLowerCase().startsWith("competitor:"))
-              .map(c => c.entity.split(":")[1]?.split("|")[0]?.trim()).filter(Boolean);
-            if (found.length) {
-              setEntities(prev => {
-                const existing = prev?.competitors || [];
-                const fresh = [...new Set(found)].filter(n => !existing.includes(n));
-                return fresh.length ? { ...prev, competitors: [...existing, ...fresh] } : prev;
-              });
-            }
-          }
-        } catch (e) { console.warn("Rechunk failed:", e.message); }
-      }
-
-      await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: newStatus, evidenceBundles, methodResults: mr, methodNotes, methodSummaries, passSummaries, passSummaryStale, sources: newSources, chunks: newChunks });
-    } catch (err) {
-      setError(`Execute failed (${methodId}): ${err.message}`);
-      setMethodStatus(p => ({ ...p, [methodId]: "error" }));
-    }
-    setMethodLoading(p => ({ ...p, [methodId]: false }));
-  }, [evidenceBundles, methodResults, methodStatus, methodNotes, methodSummaries, passSummaries, passSummaryStale, p0, activeId, corpusText, entities, methods, sources, chunks, saveState]);
+    return queueRun(methodId, "execute", methodNotes[methodId] || "");
+  }, [evidenceBundles, methodNotes, queueRun]);
 
   // ── APPROVE — just marks done and invalidates pass summary (no auto-generation)
   const approveMethod = useCallback(async (methodId) => {
+    try {
+      const res = await fetch(`/api/projects/${activeId}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "approve", methodId }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || `HTTP ${res.status}`);
+    } catch (err) {
+      setError(`Approve failed (${methodId}): ${err.message}`);
+      return;
+    }
     const newStatus = { ...methodStatus, [methodId]: "done" };
     setMethodStatus(newStatus);
 
@@ -555,7 +597,7 @@ export default function Page() {
     const newPassSummaryStale = passId ? { ...passSummaryStale, [passId]: true } : passSummaryStale;
     if (passId) setPassSummaryStale(newPassSummaryStale);
 
-    await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: newStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale: newPassSummaryStale, sources, chunks });
+    await saveState(activeId, { corpusText, entities, p0, methods, methodNotes, methodSummaries, passSummaries, passSummaryStale: newPassSummaryStale, sources });
 
     // Mark project done if all methods complete
     const allDone = methods.filter(m => m.decision !== "skip").every(m => newStatus[m.id] === "done");
@@ -563,7 +605,7 @@ export default function Page() {
       await fetch(`/api/projects/${activeId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "done" }) });
       fetch("/api/projects").then(r => r.json()).then(setProjects);
     }
-  }, [methodStatus, passSummaryStale, activeId, corpusText, entities, p0, methods, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries, sources, chunks, saveState]);
+  }, [methodStatus, passSummaryStale, activeId, corpusText, entities, p0, methods, methodNotes, methodSummaries, passSummaries, sources, saveState]);
 
   // ── RE-RUN (full extract + execute, picks up new chunks) ─────────────────────
   const runRerun = useCallback(async (methodId) => {
@@ -582,76 +624,15 @@ export default function Page() {
     // runExecute will be triggered by the user after reviewing evidence
   }, [methods, passSummaryStale, methodSummaries, runExtract]);
 
-  // ── REVISE (execute-only with prior draft + notes + new doc chunks) ───────────
+  // ── REVISE (prior draft + notes + newly added evidence; runs on the server) ───
   const runRevise = useCallback(async (methodId) => {
-    const evidence = evidenceBundles[methodId];
-    const priorResult = methodResults[methodId];
-    if (!evidence || !priorResult) return;
-    setMethodLoading(p => ({ ...p, [methodId]: true }));
-    setMethodStatus(p => ({ ...p, [methodId]: "executing" }));
-    setError(null);
-
-    // Invalidate pass summary
+    if (!evidenceBundles[methodId] || !methodResults[methodId]) return;
+    // Invalidate this method's summary and its pass summary — they describe the old draft
     const method = methods.find(m => m.id === methodId);
-    if (method?.pass) setPassSummaryStale(s => ({ ...s, [method.pass]: true }));
-
-    try {
-      const ventureCtx = p0 ? { venture_name: p0.venture_name, venture_summary: p0.venture_summary, stage: p0.stage, classification: p0.classification } : null;
-      const { text, searchResults } = await pipeline("revise", {
-        methodologyId: methodId,
-        evidenceBundle: evidence,
-        priorResult,
-        userNotes: methodNotes[methodId] || "",
-        ventureCtx,
-        webChunks: chunks,
-      });
-      // Functional setters — safe for concurrent revisions
-      let mr;
-      setMethodResults(prev => { mr = { ...prev, [methodId]: text }; return mr; });
-      let newStatus;
-      setMethodStatus(prev => { newStatus = { ...prev, [methodId]: "review" }; return newStatus; });
-
-      let newChunks;
-      setChunks(prev => { newChunks = prev; return prev; });
-      let newSources;
-      setSources(prev => { newSources = prev; return prev; });
-
-      if (searchResults?.length) {
-        const webSources = searchResults
-          .filter(r => r.url)
-          .map(r => ({ id: crypto.randomUUID(), type: "web_discovered", name: r.url.replace(/^https?:\/\//, "").slice(0, 60), rawText: r.text || r.title || r.url, entities: null, retrievedBy: methodId, addedAt: new Date().toISOString() }));
-        if (webSources.length) {
-          setSources(prev => { newSources = [...prev, ...webSources]; return newSources; });
-        }
-        // Rechunk for vector store + auto-extract new competitors
-        try {
-          const rechunked = await pipeline("rechunk", { searchResults, methodologyId: methodId });
-          if (rechunked.length) {
-            setChunks(prev => { newChunks = [...prev, ...rechunked]; return newChunks; });
-            const found = rechunked
-              .filter(c => typeof c.entity === "string" && c.entity.toLowerCase().startsWith("competitor:"))
-              .map(c => c.entity.split(":")[1]?.split("|")[0]?.trim()).filter(Boolean);
-            if (found.length) {
-              setEntities(prev => {
-                const existing = prev?.competitors || [];
-                const fresh = [...new Set(found)].filter(n => !existing.includes(n));
-                return fresh.length ? { ...prev, competitors: [...existing, ...fresh] } : prev;
-              });
-            }
-          }
-        } catch (e) { console.warn("Rechunk failed:", e.message); }
-      }
-
-      // Clear old method summary — will regenerate on next approve
-      let newMethodSummaries;
-      setMethodSummaries(prev => { newMethodSummaries = { ...prev }; delete newMethodSummaries[methodId]; return newMethodSummaries; });
-      await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: newStatus, evidenceBundles, methodResults: mr, methodNotes, methodSummaries: newMethodSummaries, passSummaries, passSummaryStale: { ...passSummaryStale, [method?.pass]: true }, sources: newSources, chunks: newChunks });
-    } catch (err) {
-      setError(`Revise failed (${methodId}): ${err.message}`);
-      setMethodStatus(p => ({ ...p, [methodId]: "error" }));
-    }
-    setMethodLoading(p => ({ ...p, [methodId]: false }));
-  }, [evidenceBundles, methodResults, methodStatus, methodNotes, methodSummaries, passSummaries, passSummaryStale, p0, activeId, corpusText, entities, methods, sources, chunks, saveState]);
+    if (method?.pass) setPassSummaryStale(st => ({ ...st, [method.pass]: true }));
+    setMethodSummaries(prev => { const n = { ...prev }; delete n[methodId]; return n; });
+    await queueRun(methodId, "revise", methodNotes[methodId] || "");
+  }, [evidenceBundles, methodResults, methods, methodNotes, queueRun]);
 
   // ── REGENERATE PASS SUMMARY ───────────────────────────────────────────────────
   const regeneratePassSummary = useCallback(async (passId) => {
@@ -666,9 +647,9 @@ export default function Page() {
       const newPassSummaryStale = { ...passSummaryStale, [passId]: false };
       setPassSummaries(newPassSummaries);
       setPassSummaryStale(newPassSummaryStale);
-      await saveState(activeId, { corpusText, entities, p0, methods, methodStatus, evidenceBundles, methodResults, methodNotes, methodSummaries, passSummaries: newPassSummaries, passSummaryStale: newPassSummaryStale, sources, chunks });
+      await saveState(activeId, { corpusText, entities, p0, methods, methodNotes, methodSummaries, passSummaries: newPassSummaries, passSummaryStale: newPassSummaryStale, sources });
     } catch (e) { console.warn("Pass summary regen failed:", e.message); }
-  }, [passSummaries, passSummaryStale, p0, methods, methodResults, activeId, corpusText, entities, methodStatus, evidenceBundles, methodNotes, methodSummaries, sources, chunks, saveState]);
+  }, [passSummaries, passSummaryStale, p0, methods, methodResults, activeId, corpusText, entities, methodNotes, methodSummaries, sources, saveState]);
 
   const toggleDecision = useCallback((methodId) => {
     setMethods(prev => prev.map(m => m.id !== methodId ? m : { ...m, decision: { run: "lite", lite: "skip", skip: "run" }[m.decision] }));
@@ -706,15 +687,15 @@ export default function Page() {
       setDocState({ chapters, execSummary, generating: false, progress: "" });
       // Persist so it survives page reload
       await saveState(activeId, {
-        corpusText, entities, p0, methods, methodStatus, evidenceBundles,
-        methodResults, methodNotes, methodSummaries, passSummaries, passSummaryStale,
-        sources, chunks, docChapters: chapters, docExecSummary: execSummary,
+        corpusText, entities, p0, methods,
+        methodNotes, methodSummaries, passSummaries, passSummaryStale,
+        sources, docChapters: chapters, docExecSummary: execSummary,
       });
     } catch (err) {
       setError(`Document generation failed: ${err.message}`);
       setDocState(s => ({ ...s, generating: false, progress: "" }));
     }
-  }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodStatus, evidenceBundles, methodNotes, methodSummaries, passSummaryStale, sources, chunks, saveState]);
+  }, [p0, methods, methodResults, passSummaries, activeId, corpusText, entities, methodNotes, methodSummaries, passSummaryStale, sources, saveState]);
 
   const downloadHTML = useCallback(() => {
     const { chapters, execSummary } = docState;
@@ -1196,7 +1177,7 @@ ${passChapters}
               <div>
                 <span className="text-sm font-semibold text-gray-900">{p0?.venture_name || "Analysis"}</span>
                 <span className="text-xs text-gray-400 ml-3">
-                  {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunks.length} web chunks · {totalDone}/{totalActive}
+                  {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunkStats.web} web chunks · {totalDone}/{totalActive}
                 </span>
               </div>
               <div className="flex gap-2">
@@ -1374,7 +1355,7 @@ ${passChapters}
                     <div className="flex items-center justify-between">
                       <h2 className="text-sm font-semibold">Source library</h2>
                       <div className="flex items-center gap-3">
-                        <span className="text-xs text-gray-400">{Math.round(corpusText.length/1000)}k chars · {chunks.length} chunks</span>
+                        <span className="text-xs text-gray-400">{Math.round(corpusText.length/1000)}k chars · {chunkStats.total} chunks</span>
                         <button onClick={() => addDocRef.current?.click()} disabled={addingDoc}
                           className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50 transition-colors">
                           {addingDoc ? <><Loader size={11} className="animate-spin" /> Processing…</> : <><Plus size={11} /> Add document</>}
@@ -1421,7 +1402,7 @@ ${passChapters}
                     {/* ── Web chunks section ── */}
                     <div>
                       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
-                        Web discoveries · {sources.filter(s => s.type === "web_discovered").length} sources · {chunks.filter(c => c.source_type === "web_search").length} chunks
+                        Web discoveries · {sources.filter(s => s.type === "web_discovered").length} sources · {chunkStats.web} chunks
                       </p>
                       <div className="space-y-1.5">
                         {sources.filter(s => s.type === "web_discovered").map(s => {
@@ -1478,7 +1459,7 @@ ${passChapters}
                           <h2 className="text-sm font-semibold">P{pg.num} · {pg.title}</h2>
                           <p className="text-xs text-gray-400">{pg.doneCount}/{pg.totalActive} complete</p>
                         </div>
-                        <button onClick={async () => { for (const m of pg.methods.filter(m => m.decision !== "skip")) await runExtract(m.id); }}
+                        <button onClick={() => pg.methods.filter(m => m.decision !== "skip" && methodStatus[m.id] !== "extracting" && methodStatus[m.id] !== "executing").forEach(m => runExtract(m.id))}
                           className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-1.5">
                           <Filter size={11} /> Extract all
                         </button>
@@ -1496,7 +1477,7 @@ ${passChapters}
                           result={methodResults[m.id]}
                           summary={methodSummaries[m.id]}
                           notes={methodNotes[m.id]}
-                          loading={!!methodLoading[m.id]}
+                          loading={!!methodLoading[m.id] || methodStatus[m.id] === "extracting" || methodStatus[m.id] === "executing"}
                           onRunExtract={() => runExtract(m.id)}
                           onRunExecute={() => runExecute(m.id)}
                           onApprove={() => approveMethod(m.id)}
@@ -1509,16 +1490,12 @@ ${passChapters}
                               const summary = await pipeline("summarise", { methodologyId: m.id, result: methodResults[m.id], ventureCtx });
                               let newMethodSummaries;
                               setMethodSummaries(prev => { newMethodSummaries = { ...prev, [m.id]: summary }; return newMethodSummaries; });
-                              let latestStatus, latestResults, latestEvidence, latestNotes, latestPassSummaries, latestPassStale, latestSources, latestChunks;
-                              setMethodStatus(prev => { latestStatus = prev; return prev; });
-                              setMethodResults(prev => { latestResults = prev; return prev; });
-                              setEvidenceBundles(prev => { latestEvidence = prev; return prev; });
+                              let latestNotes, latestPassSummaries, latestPassStale, latestSources;
                               setMethodNotes(prev => { latestNotes = prev; return prev; });
                               setPassSummaries(prev => { latestPassSummaries = prev; return prev; });
                               setPassSummaryStale(prev => { latestPassStale = prev; return prev; });
                               setSources(prev => { latestSources = prev; return prev; });
-                              setChunks(prev => { latestChunks = prev; return prev; });
-                              await saveState(activeId, { corpusText, entities, p0, methods, methodStatus: latestStatus, evidenceBundles: latestEvidence, methodResults: latestResults, methodNotes: latestNotes, methodSummaries: newMethodSummaries, passSummaries: latestPassSummaries, passSummaryStale: latestPassStale, sources: latestSources, chunks: latestChunks });
+                              await saveState(activeId, { corpusText, entities, p0, methods, methodNotes: latestNotes, methodSummaries: newMethodSummaries, passSummaries: latestPassSummaries, passSummaryStale: latestPassStale, sources: latestSources });
                             } catch (e) { setError(`Summarise failed: ${e.message}`); }
                             setMethodLoading(p => ({ ...p, [m.id]: false }));
                           }}

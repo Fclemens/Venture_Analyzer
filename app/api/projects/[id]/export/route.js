@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { projectExists } from "@/lib/db";
+import { authorizeProject } from "@/lib/access";
 import { loadProjectForClient, listRuns } from "@/lib/runs";
 import { PASS_DEFS } from "@/lib/constants";
 import { runModel, describeModel } from "@/lib/finmodel";
@@ -19,16 +18,15 @@ const safeName = (s) => String(s || "report").replace(/[^\w.-]+/g, "-").replace(
 // GET /api/projects/:id/export?format=xlsx|docx|md[&appendix=1]
 export async function GET(request, { params }) {
   try {
-    const { userId } = await auth();
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const { id } = await params;
-    if (!projectExists(id, userId)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const a = await authorizeProject(params);
+    if (a.error) return a.error;
+    const { projectId: id, userId, orgId } = a;
 
     const url = new URL(request.url);
     const format = url.searchParams.get("format") || "docx";
     if (!TYPES[format]) return NextResponse.json({ error: "Unknown format" }, { status: 400 });
 
-    const project = loadProjectForClient(id, userId);
+    const project = loadProjectForClient(id, userId, orgId);
     const s = project.state || {};
     const runs = Object.fromEntries(listRuns(id, { full: true }).map(r => [r.method_id, r]));
     const model = s.finModel ? runModel(s.finModel.assumptions, s.finModel.scenarios) : null;

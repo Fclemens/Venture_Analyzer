@@ -68,3 +68,16 @@ Browser (app/page.jsx)             Next.js server                         SQLite
 - Unit economics and scenarios are still model-written prose; a calculated model with editable assumptions is planned.
 - Web search is the only external data source; registries, funding, patent and traffic data connectors are not built.
 - No team workspaces, version-history UI (the data is stored), or Word/Excel export yet.
+
+## Team workspaces (optional)
+
+Enable **Organizations** in the Clerk dashboard, then use the switcher at the top of the sidebar to pick a workspace. An owner can click **Share with team** on a deal:
+
+| | Owner | Org member |
+|---|---|---|
+| View, edit notes/state, export | ✅ | ✅ |
+| Run extract / execute / revise, generate report | ✅ | ✅ — using **their own** API keys |
+| Comment (per method or on the whole deal) | ✅ | ✅ (authors can delete their own) |
+| Share / make private, delete | ✅ | ❌ |
+
+Strangers (other orgs, users without an org) get 404 on everything, and access is revoked the moment a deal is made private. Deleting an owner's account deletes their deals (including shared ones).

@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Check, RotateCcw, Loader, Filter, Zap, Datab
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import HistoryPanel from "@/components/HistoryPanel";
+import CommentsPanel from "@/components/CommentsPanel";
 
 function Badge({ type, children }) {
   const s = { pending:"bg-gray-100 text-gray-500", extracting:"bg-violet-50 text-violet-700", executing:"bg-blue-50 text-blue-700", extracted:"bg-violet-100 text-violet-800", review:"bg-amber-50 text-amber-700", done:"bg-emerald-50 text-emerald-700", error:"bg-red-50 text-red-600", skip:"bg-gray-100 text-gray-400", run:"bg-emerald-50 text-emerald-700", lite:"bg-amber-50 text-amber-700", fast:"bg-purple-50 text-purple-600", smart:"bg-blue-50 text-blue-600" };
@@ -17,7 +18,7 @@ function cleanMarkdown(text) {
 
 const CONFIDENCE_COLORS = { high: "bg-emerald-400", medium: "bg-amber-400", low: "bg-red-400" };
 
-export default function MethodCard({ method, status, evidence, result, summary, notes, loading, projectId, runVersion, staleBecause, onRestored, onRunExtract, onRunExecute, onApprove, onRerun, onRevise, onSummarise, onToggle, onNotesChange }) {
+export default function MethodCard({ method, status, evidence, result, summary, notes, loading, projectId, runVersion, staleBecause, onRestored, commentCount, onCommentsChanged, onRunExtract, onRunExecute, onApprove, onRerun, onRevise, onSummarise, onToggle, onNotesChange }) {
   const [expanded, setExpanded] = useState(false);
   const [showFullAnalysis, setShowFullAnalysis] = useState(false);
   const isSkipped = method.decision === "skip";
@@ -142,8 +143,11 @@ export default function MethodCard({ method, status, evidence, result, summary, 
               This analysis was written before <strong>{staleBecause.join(", ")}</strong> changed. Consider using Revise so it reflects the newer findings.
             </p>
           )}
-          {result && projectId && (
-            <HistoryPanel projectId={projectId} methodId={method.id} currentResult={result} version={runVersion} onRestored={onRestored} />
+          {projectId && (
+            <div className="flex gap-4 flex-wrap items-start">
+              {result && <HistoryPanel projectId={projectId} methodId={method.id} currentResult={result} version={runVersion} onRestored={onRestored} />}
+              <CommentsPanel projectId={projectId} methodId={method.id} count={commentCount} onChanged={onCommentsChanged} />
+            </div>
           )}
 
           {/* Notes */}

@@ -16,6 +16,9 @@ import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { escapeHtml as esc } from "@/lib/security-client";
 import { staleDependents } from "@/lib/staleness";
 import { UPLOAD_PATTERN, ACCEPT_ATTR, typeOf } from "@/lib/filetypes";
+import CommentsPanel from "@/components/CommentsPanel";
+import { useOrganization } from "@clerk/nextjs";
+import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
 import { runModel, describeModel } from "@/lib/finmodel";
 
@@ -163,6 +166,9 @@ export default function Page() {
   // Searchable evidence chunks (and their embeddings) live on the server; the
   // browser only keeps counts for display.
   const [chunkStats, setChunkStats] = useState({ total: 0, web: 0, document: 0 });
+  const { organization } = useOrganization();
+  const [projectMeta, setProjectMeta] = useState({ is_owner: true, shared: false });
+  const [commentCounts, setCommentCounts] = useState({});
   const [finModel, setFinModel] = useState(null);       // { currency, assumptions, scenarios } — inputs only; results are computed
   const [finProposing, setFinProposing] = useState(false);
   const finSaveTimer = useRef(null);
@@ -172,6 +178,7 @@ export default function Page() {
   const entitiesRef = useRef(null);
   const syncRunsRef = useRef(null);
   const loadReportRef = useRef(null);
+  const refreshCommentsRef = useRef(null);
   const [activePass, setActivePass] = useState("p0");
 
   // ── Competitor validation ─────────────────────────────────────────────────────
@@ -335,7 +342,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setCommentCounts({}); setProjectMeta({ is_owner: true, shared: false }); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -345,6 +352,7 @@ export default function Page() {
     const res = await fetch(`/api/projects/${id}`);
     if (!res.ok) { setError(`Failed to load project (${res.status})`); return; }
     const project = await res.json();
+    setProjectMeta({ is_owner: project.is_owner !== false, shared: !!project.shared });
     activeIdRef.current = id; // synchronous: the first runs sync must not be dropped as "wrong project"
     setActiveId(id);
     const s = project.state || {};
@@ -374,6 +382,7 @@ export default function Page() {
     });
     syncRunsRef.current?.(id, { full: true });
     loadReportRef.current?.(id);
+    refreshCommentsRef.current?.(id);
   }, []);
 
   useEffect(() => {
@@ -698,6 +707,29 @@ export default function Page() {
   const toggleDecision = useCallback((methodId) => {
     setMethods(prev => prev.map(m => m.id !== methodId ? m : { ...m, decision: { run: "lite", lite: "skip", skip: "run" }[m.decision] }));
   }, []);
+
+  // ── TEAM: comments + sharing ───────────────────────────────────────────────────
+  const refreshComments = useCallback(async (projectId) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/comments`);
+      if (res.ok && projectId === activeIdRef.current) setCommentCounts((await res.json()).counts || {});
+    } catch { /* counts are cosmetic */ }
+  }, []);
+  useEffect(() => { refreshCommentsRef.current = refreshComments; }, [refreshComments]);
+  // Teammates comment while you're away: refresh counts when the tab regains focus
+  useEffect(() => {
+    const onFocus = () => activeIdRef.current && refreshComments(activeIdRef.current);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshComments]);
+
+  const toggleShare = useCallback(async () => {
+    const next = !projectMeta.shared;
+    const res = await fetch(`/api/projects/${activeId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shared: next }) });
+    if (!res.ok) { setError((await res.json()).error || "Could not change sharing"); return; }
+    setProjectMeta(m => ({ ...m, shared: next }));
+    fetch("/api/projects").then(r => r.json()).then(setProjects).catch(console.error);
+  }, [activeId, projectMeta.shared]);
 
   // ── REPORT (server-side job: survives closing the tab) ─────────────────────────
   const [snapshots, setSnapshots] = useState([]);
@@ -1253,6 +1285,20 @@ ${passChapters}
             <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center justify-between flex-shrink-0">
               <div>
                 <span className="text-sm font-semibold text-gray-900">{p0?.venture_name || "Analysis"}</span>
+                {activeId && (projectMeta.is_owner ? (
+                  <button onClick={toggleShare} disabled={!organization && !projectMeta.shared}
+                    title={organization ? `Share with everyone in ${organization.name}` : "Select an organization (top of the sidebar) to share with your team"}
+                    className={`ml-3 text-xs px-2 py-0.5 rounded-full border inline-flex items-center gap-1 disabled:opacity-40 ${projectMeta.shared ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"}`}>
+                    <Users size={10} /> {projectMeta.shared ? "Shared with team — make private" : "Share with team"}
+                  </button>
+                ) : (
+                  <span className="ml-3 text-xs px-2 py-0.5 rounded-full border bg-blue-50 text-blue-700 border-blue-200 inline-flex items-center gap-1"><Users size={10} /> Shared with you</span>
+                ))}
+                {activeId && (
+                  <span className="ml-3 inline-block align-top">
+                    <CommentsPanel projectId={activeId} methodId={null} count={commentCounts._project || 0} label="Deal discussion" onChanged={() => refreshComments(activeId)} />
+                  </span>
+                )}
                 <span className="text-xs text-gray-400 ml-3">
                   {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunkStats.web} web chunks · {totalDone}/{totalActive}
                 </span>
@@ -1559,6 +1605,8 @@ ${passChapters}
                           summary={methodSummaries[m.id]}
                           notes={methodNotes[m.id]}
                           projectId={activeId}
+                          commentCount={commentCounts[m.id] || 0}
+                          onCommentsChanged={() => refreshComments(activeId)}
                           runVersion={runVersions.current[m.id]}
                           staleBecause={staleMap[m.id]}
                           onRestored={() => syncRuns(activeId, { full: true })}

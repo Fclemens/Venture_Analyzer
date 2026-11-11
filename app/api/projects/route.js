@@ -5,9 +5,9 @@ import { randomUUID } from "crypto";
 
 export async function GET() {
   try {
-    const { userId } = await auth();
+    const { userId, orgId } = await auth();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    return NextResponse.json(listProjects(userId));
+    return NextResponse.json(listProjects(userId, orgId ?? null));
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

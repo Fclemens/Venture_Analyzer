@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { projectExists } from "@/lib/db";
+import { authorizeProject } from "@/lib/access";
 import { deleteWebSource, deleteDocumentChunks, chunkStats } from "@/lib/runs";
 
 // DELETE ?id=<sourceId>&name=<fileName>
@@ -8,10 +7,9 @@ import { deleteWebSource, deleteDocumentChunks, chunkStats } from "@/lib/runs";
 //   name → removes all searchable chunks that came from that uploaded document
 export async function DELETE(request, { params }) {
   try {
-    const { userId } = await auth();
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const { id } = await params;
-    if (!projectExists(id, userId)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const a = await authorizeProject(params);
+    if (a.error) return a.error;
+    const id = a.projectId;
 
     const url = new URL(request.url);
     const sourceId = url.searchParams.get("id");

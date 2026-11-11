@@ -1,7 +1,7 @@
 "use client";
-import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut, BarChart3 } from "lucide-react";
+import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut, BarChart3, Users } from "lucide-react";
 import Link from "next/link";
-import { useUser, useClerk } from "@clerk/nextjs";
+import { useUser, useClerk, OrganizationSwitcher } from "@clerk/nextjs";
 
 function timeAgo(ts) {
   const diff = Date.now() - ts;
@@ -35,7 +35,12 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
         </div>
       </div>
 
+      {/* Choose the team workspace; deals can be shared with the active organization */}
       <div className="px-3 pt-2">
+        <OrganizationSwitcher hidePersonal={false} afterSelectOrganizationUrl="/" afterSelectPersonalUrl="/"
+          appearance={{ elements: { rootBox: "w-full", organizationSwitcherTrigger: "w-full justify-between text-xs px-2 py-1.5 rounded-lg hover:bg-gray-50" } }} />
+      </div>
+      <div className="px-3 pt-1">
         <Link href="/compare" className="flex items-center gap-2 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg px-3 py-1.5 transition-colors">
           <BarChart3 size={13} /> Compare deals
         </Link>
@@ -67,15 +72,20 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
               <p className={`text-xs font-medium truncate leading-snug ${activeId === p.id ? "text-blue-700" : "text-gray-800"}`}>
                 {p.name}
               </p>
+              {p.shared && (
+                <p className="flex items-center gap-1 text-[10px] text-gray-400 mt-0.5"><Users size={9} /> {p.is_owner ? "Shared with team" : "Shared with you"}</p>
+              )}
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[p.status] || STATUS_DOT.setup}`} />
                 <span className="text-xs text-gray-400">{timeAgo(p.updated_at)}</span>
               </div>
             </div>
-            <button onClick={e => { e.stopPropagation(); onDelete(p.id); }}
-              className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all mt-0.5">
-              <Trash2 size={11} />
-            </button>
+            {p.is_owner !== false && (
+              <button onClick={e => { e.stopPropagation(); onDelete(p.id); }} aria-label={`Delete ${p.name}`}
+                className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all mt-0.5">
+                <Trash2 size={11} />
+              </button>
+            )}
           </div>
         ))}
       </div>

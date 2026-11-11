@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { getSettings, projectExists } from "@/lib/db";
+import { getSettings, projectAccess } from "@/lib/db";
 import {
   METHODOLOGY_REGISTRY,
   getP0DocSystem, getP0ConceptSystem,
@@ -28,8 +28,8 @@ class HttpError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
 
-function requireProject(projectId, userId) {
-  if (typeof projectId !== "string" || !projectExists(projectId, userId)) throw new HttpError("Project not found", 404);
+function requireProject(projectId, userId, orgId) {
+  if (typeof projectId !== "string" || !projectAccess(projectId, userId, orgId)) throw new HttpError("Project not found", 404);
 }
 
 // Validates an upload by its file NAME (the extension decides the type; the
@@ -92,7 +92,7 @@ const ENTITY_SCAN_SYSTEM = `Scan the document text and list all named entities. 
 
 export async function POST(request) {
   try {
-    const { userId } = await auth();
+    const { userId, orgId } = await auth();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const rl = rateLimit(`pipeline:${userId}`);
@@ -117,7 +117,7 @@ export async function POST(request) {
       // ── 1. Extract text from PDF ──────────────────────────────────────────
       case "ingest": {
         const { fileName, projectId } = body;
-        requireProject(projectId, userId);
+        requireProject(projectId, userId, orgId ?? null);
         const result = await readUpload(body, callModelLogged);
         // Index the full text server-side so every method can retrieve from the
         // whole document. Embeddings stay in the database - never sent to the browser.
@@ -128,7 +128,7 @@ export async function POST(request) {
       // ── 1b. Ingest additional document into chunks (with embeddings) ──────
       case "ingest_doc": {
         const { fileName, projectId } = body;
-        requireProject(projectId, userId);
+        requireProject(projectId, userId, orgId ?? null);
 
         // Extract text
         const ingest = await readUpload(body, callModelLogged);

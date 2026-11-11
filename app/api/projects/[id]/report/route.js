@@ -1,17 +1,11 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { projectExists, getProjectById } from "@/lib/db";
+import { authorizeProject } from "@/lib/access";
+import { getProjectById } from "@/lib/db";
 import { rateLimit } from "@/lib/security";
 import { submitReport, ensureWorker, REPORT_JOB } from "@/lib/jobs";
 import { latestJob, activeJob, listSnapshots } from "@/lib/runs";
 
-async function authorize(params) {
-  const { userId } = await auth();
-  if (!userId) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  const { id } = await params;
-  if (!projectExists(id, userId)) return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-  return { userId, projectId: id };
-}
+const authorize = (params) => authorizeProject(params);
 
 // GET            → { status, progress, error, snapshots } (cheap, for polling)
 // GET ?full=1    → also the report itself (chapters + executive summary)

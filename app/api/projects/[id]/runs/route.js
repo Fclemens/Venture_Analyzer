@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { projectExists } from "@/lib/db";
+import { authorizeProject } from "@/lib/access";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { rateLimit } from "@/lib/security";
 import { ensureWorker, submitJob } from "@/lib/jobs";
@@ -11,13 +10,7 @@ import {
 // Method runs are queued server-side. The browser enqueues work and polls;
 // closing the tab does not stop a run.
 
-async function authorize(params) {
-  const { userId } = await auth();
-  if (!userId) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  const { id } = await params;
-  if (!projectExists(id, userId)) return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-  return { userId, projectId: id };
-}
+const authorize = (params) => authorizeProject(params);
 
 // GET /runs                → lightweight status of every method + chunk counts (polling)
 // GET /runs?full=1         → every run including evidence and results (initial load)

@@ -42,6 +42,15 @@ export async function PUT(request) {
           )
         ),
       },
+      // Only known connectors, only booleans
+      connectors: {
+        ...current.connectors,
+        ...Object.fromEntries(
+          Object.entries(body.connectors ?? {})
+            .filter(([k]) => k in DEFAULT_SETTINGS.connectors)
+            .map(([k, v]) => [k, { enabled: v?.enabled === true }])
+        ),
+      },
       // Start from the stored providers so a save that omits (or only partly
       // includes) `providers` can never wipe existing API keys.
       providers: {

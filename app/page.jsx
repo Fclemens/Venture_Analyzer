@@ -20,7 +20,6 @@ import CommentsPanel from "@/components/CommentsPanel";
 import { useOrganization } from "@clerk/nextjs";
 import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
-import { runModel, describeModel } from "@/lib/finmodel";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
 async function pipeline(step, body) {
@@ -886,21 +885,6 @@ ${passChapters}
     a.download = `${(p0?.venture_name || 'analysis').replace(/\s+/g,'-')}-report.html`;
     a.click();
   }, [docState, p0]);
-
-  const compileDoc = useCallback(() => {
-    let doc = `# Venture Analysis: ${p0?.venture_name || "Unknown"}\n\n*Generated ${new Date().toLocaleDateString()} · ${entryMode} mode · ${pipelineMode} pipeline*\n\n`;
-    doc += `## Executive summary\n\n${p0?.venture_summary || ""}\n\n`;
-    doc += `**Model:** ${p0?.classification?.business_model?.toUpperCase()} · **Stage:** ${p0?.stage} · **Market maturity:** ${p0?.classification?.market_maturity}\n\n---\n\n`;
-    PASS_DEFS.slice(1).forEach(pass => {
-      const pm = methods.filter(m => m.pass === pass.id && methodResults[m.id]);
-      if (pm.length) {
-        doc += `## ${pass.title}\n\n`;
-        pm.forEach(m => { doc += `### ${METHODOLOGY_REGISTRY[m.id]?.name || m.id}\n\n${methodResults[m.id]}\n\n`; });
-        doc += `---\n\n`;
-      }
-    });
-    return doc;
-  }, [p0, methods, methodResults, entryMode, pipelineMode]);
 
   const staleMap = useMemo(
     () => staleDependents({ methods, resultTimes, dependencies: DEPENDENCIES }),

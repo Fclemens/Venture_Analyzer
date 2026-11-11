@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
-import { X, Eye, EyeOff, Check, Loader, AlertCircle, ChevronDown } from "lucide-react";
-import { PROVIDERS, PROVIDER_MODELS } from "@/lib/constants";
+import { X, Eye, EyeOff, Check, Loader, AlertCircle } from "lucide-react";
+import { PROVIDERS, PROVIDER_MODELS, CONNECTOR_INFO } from "@/lib/constants";
 
 function ProviderBadge({ provider }) {
   const p = PROVIDERS[provider];
@@ -188,11 +188,30 @@ export default function SettingsPanel({ onClose }) {
                     onProviderChange={p => setSettings(s => ({ ...s, roles: { ...s.roles, [role]: { ...s.roles[role], provider: p } } }))}
                     onModelChange={m => setSettings(s => ({ ...s, roles: { ...s.roles, [role]: { ...s.roles[role], model: m } } }))}
                   />
-                  {settings.roles[role]?.provider === "gemini" && role === "smart" && (
-                    <p className="text-xs text-amber-600 mt-1">⚠ Gemini uses Google Search grounding but rechunking is disabled. Results may lack web citations.</p>
-                  )}
                 </div>
               ))}
+            </div>
+          </section>
+
+          {/* ── Outside data sources (opt-in) ── */}
+          <section>
+            <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Outside data sources</h3>
+            <p className="text-xs text-gray-500 mb-3">Public databases that add evidence beyond web search. They are <strong>off by default</strong> because they receive details about the deal you are analysing — pitch decks are usually confidential.</p>
+            <div className="space-y-3">
+              {Object.entries(CONNECTOR_INFO).map(([id, info]) => {
+                const on = !!settings.connectors?.[id]?.enabled;
+                return (
+                  <label key={id} className="flex items-start gap-2.5 cursor-pointer">
+                    <input type="checkbox" checked={on} className="mt-0.5"
+                      onChange={e => setSettings(s => ({ ...s, connectors: { ...s.connectors, [id]: { enabled: e.target.checked } } }))} />
+                    <span className="text-xs">
+                      <span className="font-medium text-gray-800">{info.name}</span>
+                      <span className="block text-gray-500">Sends: {info.sends}. Used for: {info.helps}.</span>
+                      {info.needs && <span className="block text-gray-400">Server needs {info.needs}.</span>}
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           </section>
 

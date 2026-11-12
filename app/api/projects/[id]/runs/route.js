@@ -4,7 +4,7 @@ import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { rateLimit } from "@/lib/security";
 import { ensureWorker, submitJob } from "@/lib/jobs";
 import {
-  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts, projectUsage,
+  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts, projectUsage, cancelQueuedJob, activeJob,
 } from "@/lib/runs";
 
 // Method runs are queued server-side. The browser enqueues work and polls;
@@ -43,7 +43,7 @@ export async function GET(request, { params }) {
   }
 }
 
-const ACTIONS = new Set(["extract", "execute", "revise", "approve", "restore"]);
+const ACTIONS = new Set(["extract", "execute", "revise", "approve", "restore", "run", "cancel"]);
 
 // POST { action: "extract" | "execute" | "revise" | "approve" | "restore", methodId, notes?, versionId? }
 export async function POST(request, { params }) {
@@ -64,6 +64,11 @@ export async function POST(request, { params }) {
       if (!run?.result) return NextResponse.json({ error: "Nothing to approve yet" }, { status: 400 });
       if (run.status === "extracting" || run.status === "executing") return NextResponse.json({ error: "Method is still running" }, { status: 409 });
       return NextResponse.json({ run: saveRun(a.projectId, methodId, { status: "done", error: null }) });
+    }
+    if (action === "cancel") {
+      if (cancelQueuedJob(a.projectId, methodId)) return NextResponse.json({ run: getRun(a.projectId, methodId, { full: false }) });
+      if (activeJob(a.projectId, methodId)) return NextResponse.json({ error: "This step is already running and will finish on its own." }, { status: 409 });
+      return NextResponse.json({ error: "Nothing to cancel" }, { status: 400 });
     }
     if (action === "restore") {
       if (run && (run.status === "extracting" || run.status === "executing")) return NextResponse.json({ error: "Method is still running" }, { status: 409 });

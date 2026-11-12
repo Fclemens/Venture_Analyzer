@@ -39,3 +39,13 @@ test("staleDependents flags analyses older than a changed upstream pass; ignores
   assert.equal(stale.skipped, undefined);
   assert.equal(stale.comp, undefined, "p3 depends on p0,p1 only");
 });
+
+import { prettyMarkdownLine } from "../lib/diff.js";
+test("prettyMarkdownLine strips markdown syntax for the changes view", () => {
+  assert.equal(prettyMarkdownLine("| Step | Value |"), "Step  ·  Value");
+  assert.equal(prettyMarkdownLine("|---|:---:|"), null);
+  assert.equal(prettyMarkdownLine("## Key insight"), "Key insight");
+  assert.equal(prettyMarkdownLine("**Result:** about **€1.1 bn**"), "Result: about €1.1 bn");
+  assert.equal(prettyMarkdownLine("> quoted"), "quoted");
+  assert.equal(prettyMarkdownLine(""), "");
+});

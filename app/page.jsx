@@ -20,6 +20,10 @@ import CommentsPanel from "@/components/CommentsPanel";
 import { useOrganization } from "@clerk/nextjs";
 import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
+import DealOverview, { passColor } from "@/components/DealOverview";
+import { ToastProvider, useToast, ProgressRing, Pill } from "@/components/ui";
+import { nextStep, pipelineProgress } from "@/lib/next-step";
+import { LayoutDashboard, Coins, FileStack, Globe2 } from "lucide-react";
 
 // ─── API helpers (all LLM calls server-side) ──────────────────────────────────
 // The active project, so every model call is attributed to it for usage tracking
@@ -134,7 +138,8 @@ const SOURCE_LABELS = { document: "PDF", url: "URL", note: "Note", web_discovere
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
-export default function Page() {
+function PageInner() {
+  const toast = useToast();
   // ── Projects ──────────────────────────────────────────────────────────────────
   const [projects, setProjects] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -171,6 +176,10 @@ export default function Page() {
   const [projectMeta, setProjectMeta] = useState({ is_owner: true, shared: false });
   const [commentCounts, setCommentCounts] = useState({});
   const [usage, setUsage] = useState({ calls: 0, tokens: 0 });
+  const [founderAnswers, setFounderAnswers] = useState({}); // { question text: { asked, answer } }
+  const [focusMethodId, setFocusMethodId] = useState(null);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [runStartedAt, setRunStartedAt] = useState({}); // methodId → when its current step started (for the elapsed timer)
   const [finModel, setFinModel] = useState(null);       // { currency, assumptions, scenarios } — inputs only; results are computed
   const [finProposing, setFinProposing] = useState(false);
   const finSaveTimer = useRef(null);
@@ -344,7 +353,7 @@ export default function Page() {
     setCorpusText(""); setEntities(null); setP0(null); setMethods([]);
     setMethodStatus({}); setEvidenceBundles({}); setMethodResults({});
     setMethodNotes({}); setMethodSummaries({}); setPassSummaries({}); setPassSummaryStale({});
-    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setCommentCounts({}); setUsage({ calls: 0, tokens: 0 }); setProjectMeta({ is_owner: true, shared: false }); setActivePass("p0");
+    setSources([]); setChunkStats({ total: 0, web: 0, document: 0 }); runVersions.current = {}; setResultTimes({}); setFinModel(null); setSnapshots([]); setCommentCounts({}); setUsage({ calls: 0, tokens: 0 }); setProjectMeta({ is_owner: true, shared: false }); setFounderAnswers({}); setFocusMethodId(null); setActivePass("p0");
     setDocState({ chapters: {}, execSummary: null, generating: false, progress: "" });
     setError(null);
   }, []);
@@ -375,7 +384,8 @@ export default function Page() {
     setChunkStats(project.chunkStats || { total: 0, web: 0, document: 0 });
     setEntryMode(project.entry_mode || "document");
     setScreen(s.p0 ? "pipeline" : "setup");
-    setActivePass("p0");
+    setFounderAnswers(s.founderAnswers || {});
+    setActivePass("overview"); // existing deals open on their overview
     setDocState({
       chapters: s.docChapters || {},
       execSummary: s.docExecSummary || null,
@@ -529,18 +539,27 @@ export default function Page() {
 
       if (full) {
         const st = {}, ev = {}, rs = {}, times = {};
+        const started = {};
         for (const [mid, r] of Object.entries(data.runs)) {
           st[mid] = r.status;
+          if (r.status === "extracting" || r.status === "executing") started[mid] = r.updated_at;
           if (r.result_updated_at) times[mid] = r.result_updated_at;
           if (r.evidence) ev[mid] = r.evidence;
           if (r.result != null) rs[mid] = r.result;
           runVersions.current[mid] = r.version;
         }
-        setMethodStatus(st); setEvidenceBundles(ev); setMethodResults(rs); setResultTimes(times);
+        setMethodStatus(st); setEvidenceBundles(ev); setMethodResults(rs); setResultTimes(times); setRunStartedAt(started);
         return;
       }
 
       const settled = [];
+      setRunStartedAt(prev => {
+        const n = { ...prev };
+        for (const [mid, r] of Object.entries(data.runs)) {
+          if (r.status === "extracting" || r.status === "executing") { if (!n[mid]) n[mid] = r.updated_at; } else delete n[mid];
+        }
+        return n;
+      });
       setResultTimes(prev => {
         const next = { ...prev };
         for (const [mid, r] of Object.entries(data.runs)) if (r.result_updated_at) next[mid] = r.result_updated_at;
@@ -586,7 +605,8 @@ export default function Page() {
   const queueRun = useCallback(async (methodId, action, notes = "") => {
     if (!activeId) return;
     setError(null);
-    setMethodStatus(p => ({ ...p, [methodId]: action === "extract" ? "extracting" : "executing" }));
+    setMethodStatus(p => ({ ...p, [methodId]: action === "extract" || action === "run" ? "extracting" : "executing" }));
+    setRunStartedAt(p => ({ ...p, [methodId]: Date.now() }));
     try {
       const res = await fetch(`/api/projects/${activeId}/runs`, {
         method: "POST",
@@ -906,6 +926,42 @@ ${passChapters}
     a.download = `${(p0?.venture_name || 'analysis').replace(/\s+/g,'-')}-report.html`;
     a.click();
   }, [docState, p0]);
+
+  // ── OVERVIEW: progress, the next best action, run-all ──────────────────────────
+  const progress = useMemo(() => pipelineProgress(methods, methodStatus), [methods, methodStatus]);
+  const reportStale = useMemo(() => {
+    const at = snapshots[0]?.created_at;
+    return !!at && Object.values(resultTimes).some(t => t > at);
+  }, [snapshots, resultTimes]);
+  const next = useMemo(() => nextStep({
+    methods, status: methodStatus, hasP0: !!p0,
+    report: { exists: !!docState.execSummary, generating: docState.generating, stale: reportStale },
+  }), [methods, methodStatus, p0, docState.execSummary, docState.generating, reportStale]);
+
+  const runAllRemaining = useCallback(async () => {
+    const todo = methods.filter(m => m.decision !== "skip" && !["done", "review", "extracting", "executing"].includes(methodStatus[m.id]));
+    for (const m of todo) await queueRun(m.id, methodStatus[m.id] === "extracted" ? "execute" : "run", methodNotes[m.id] || "");
+    if (todo.length) toast(`Queued ${todo.length} ${todo.length === 1 ? "analysis" : "analyses"} — they keep running if you close this tab.`, "success");
+  }, [methods, methodStatus, methodNotes, queueRun, toast]);
+
+  const onNextStep = useCallback(() => {
+    switch (next.kind) {
+      case "runAll": return runAllRemaining();
+      case "fix": case "review": setActivePass(next.pass); setFocusMethodId(next.methodId); return;
+      case "report": setScreen("output"); return generateDocument();
+      case "share": return setScreen("output");
+      case "setup": return setScreen("setup");
+      default: return;
+    }
+  }, [next, runAllRemaining, generateDocument]);
+
+  const cancelRun = useCallback(async (methodId) => {
+    const res = await fetch(`/api/projects/${activeId}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "cancel", methodId }) });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "Could not cancel", "error"); return; }
+    toast("Cancelled.", "success");
+    syncRuns(activeId, { full: true });
+  }, [activeId, toast, syncRuns]);
 
   // Every "this contradicts the initial scoping" flag raised by a method or pass summary
   const revisionTriggers = useMemo(() => {
@@ -1301,63 +1357,89 @@ ${passChapters}
         {screen === "pipeline" && (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Top bar */}
-            <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center justify-between flex-shrink-0">
-              <div>
-                <span className="text-sm font-semibold text-gray-900">{p0?.venture_name || "Analysis"}</span>
-                {activeId && (projectMeta.is_owner ? (
-                  <button onClick={toggleShare} disabled={!organization && !projectMeta.shared}
-                    title={organization ? `Share with everyone in ${organization.name}` : "Select an organization (top of the sidebar) to share with your team"}
-                    className={`ml-3 text-xs px-2 py-0.5 rounded-full border inline-flex items-center gap-1 disabled:opacity-40 ${projectMeta.shared ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"}`}>
-                    <Users size={10} /> {projectMeta.shared ? "Shared with team — make private" : "Share with team"}
-                  </button>
-                ) : (
-                  <span className="ml-3 text-xs px-2 py-0.5 rounded-full border bg-blue-50 text-blue-700 border-blue-200 inline-flex items-center gap-1"><Users size={10} /> Shared with you</span>
-                ))}
-                {activeId && (
-                  <span className="ml-3 inline-block align-top">
-                    <CommentsPanel projectId={activeId} methodId={null} count={commentCounts._project || 0} label="Deal discussion" onChanged={() => refreshComments(activeId)} />
-                  </span>
-                )}
-                <span className="text-xs text-gray-400 ml-3">
-                  {p0?.classification?.business_model?.toUpperCase()} · {corpusText.length > 0 ? `${Math.round(corpusText.length/1000)}k chars` : "concept"} · {chunkStats.web} web chunks{usage.tokens > 0 ? ` · ${usage.tokens >= 1e6 ? (usage.tokens / 1e6).toFixed(2) + "M" : Math.round(usage.tokens / 1000) + "k"} tokens used` : ""} · {totalDone}/{totalActive}
-                </span>
+            <div className="bg-white border-b border-gray-200 px-4 py-2.5 flex items-center gap-3 flex-shrink-0 flex-wrap print:hidden">
+              <button onClick={() => setMobileNav(v => !v)} className="md:hidden text-gray-600 px-1" aria-label="Toggle navigation">☰</button>
+              <span className="text-base font-semibold text-gray-900">{p0?.venture_name || "Analysis"}</span>
+              {activeId && (projectMeta.is_owner ? (
+                <button onClick={toggleShare} disabled={!organization && !projectMeta.shared}
+                  title={organization ? (projectMeta.shared ? `Shared with everyone in ${organization.name}. Click to make private.` : `Share with everyone in ${organization.name}`) : "Select an organization (top of the sidebar) to share with your team"}
+                  className={`text-xs px-2 py-0.5 rounded-full border inline-flex items-center gap-1 disabled:opacity-40 ${projectMeta.shared ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"}`}>
+                  <Users size={11} /> {projectMeta.shared ? "Shared with team" : "Share with team"}
+                </button>
+              ) : (
+                <Pill tone="blue" icon={<Users size={11} />}>Shared with you</Pill>
+              ))}
+              <div className="hidden lg:flex items-center gap-1.5">
+                {p0?.classification?.business_model && <Pill>{p0.classification.business_model.toUpperCase()}</Pill>}
+                <Pill icon={<FileStack size={11} />} title="Searchable passages from uploaded documents">{chunkStats.document} doc passages</Pill>
+                <Pill icon={<Globe2 size={11} />} title="Facts gathered from web search and outside data">{chunkStats.web} web facts</Pill>
+                {usage.tokens > 0 && <Pill icon={<Coins size={11} />} title={`${usage.calls} model calls on this deal (all team members)`}>{usage.tokens >= 1e6 ? (usage.tokens / 1e6).toFixed(2) + "M" : Math.round(usage.tokens / 1000) + "k"} tokens</Pill>}
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => setScreen("setup")} className="text-xs text-gray-400 hover:text-gray-700 px-2 py-1">← New</button>
-                <button onClick={() => setScreen("output")} className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-lg hover:bg-gray-700 flex items-center gap-1">
-                  <FileText size={11} /> Document
+              {activeId && (
+                <span className="inline-block align-top">
+                  <CommentsPanel projectId={activeId} methodId={null} count={commentCounts._project || 0} label="Discussion" onChanged={() => refreshComments(activeId)} />
+                </span>
+              )}
+              <div className="ml-auto flex items-center gap-3">
+                <div className="hidden sm:flex items-center gap-2" title={`${progress.done} of ${progress.total} analyses approved`}>
+                  <div className="w-28 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-emerald-600" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} />
+                  </div>
+                  <span className="text-xs text-gray-600 tabular-nums">{progress.done}/{progress.total}</span>
+                </div>
+                <button onClick={() => setScreen("setup")} className="text-xs text-gray-500 hover:text-gray-800 px-2 py-1">New deal</button>
+                <button onClick={() => setScreen("output")} className="text-xs bg-gray-900 text-white px-3 py-1.5 rounded-lg hover:bg-gray-700 flex items-center gap-1.5">
+                  <FileText size={12} /> Report
+                  <span className={`w-1.5 h-1.5 rounded-full ${docState.generating ? "bg-blue-400 animate-pulse" : docState.execSummary ? (reportStale ? "bg-amber-400" : "bg-emerald-400") : "bg-gray-500"}`}
+                    title={docState.generating ? "Being written" : docState.execSummary ? (reportStale ? "Out of date: analyses changed" : "Ready") : "Not generated yet"} />
                 </button>
               </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              {/* Pass sidebar */}
-              <div className="w-48 flex-shrink-0 bg-white border-r border-gray-100 overflow-y-auto">
-                {/* P0 */}
-                {[{ id: "p0", label: "P0 Scoping", done: !!p0 }, { id: "sources", label: "Sources", count: sources.length }].map(item => (
-                  <button key={item.id} onClick={() => setActivePass(item.id)}
-                    className={`w-full text-left px-3 py-2.5 border-b border-gray-100 text-xs transition-all ${activePass === item.id ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
-                    <div className="flex items-center justify-between">
-                      <span>{item.label}</span>
-                      {item.done && <Check size={11} className="text-emerald-500" />}
-                      {item.count !== undefined && <span className="text-gray-400">{item.count}</span>}
-                    </div>
+              {/* Pass sidebar — grouped by stage, with progress rings */}
+              <nav className={`${mobileNav ? "block absolute z-30 inset-y-0 left-0 shadow-xl" : "hidden"} md:block md:static w-56 flex-shrink-0 bg-white border-r border-gray-100 overflow-y-auto print:hidden`} aria-label="Analysis sections">
+                {[
+                  { id: "overview", label: "Overview", icon: <LayoutDashboard size={13} /> },
+                  { id: "p0", label: "Scoping", icon: p0 ? <Check size={13} className="text-emerald-600" /> : null, badge: revisionTriggers.length ? <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Findings challenge the scoping" /> : null },
+                  { id: "sources", label: "Sources", count: sources.length },
+                ].map(item => (
+                  <button key={item.id} onClick={() => { setActivePass(item.id); setFocusMethodId(null); setMobileNav(false); }}
+                    className={`w-full text-left px-3 py-2.5 text-sm flex items-center gap-2 transition-colors ${activePass === item.id ? "bg-blue-50 text-blue-800 font-medium" : "text-gray-700 hover:bg-gray-50"}`}>
+                    <span className="w-[18px] flex justify-center text-gray-500">{item.icon}</span>
+                    <span className="flex-1">{item.label}</span>
+                    {item.badge}
+                    {item.count !== undefined && <span className="text-xs text-gray-500 tabular-nums">{item.count}</span>}
                   </button>
                 ))}
-                {passGroups.slice(1).map(pg => (
-                  <button key={pg.id} onClick={() => setActivePass(pg.id)}
-                    className={`w-full text-left px-3 py-2.5 border-b border-gray-100 last:border-0 text-xs transition-all ${activePass === pg.id ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-600 hover:bg-gray-50"}`}>
-                    <div className="flex items-center justify-between">
-                      <span>P{pg.num} {pg.title}</span>
-                      {pg.totalActive > 0 && (
-                        <span className={pg.doneCount === pg.totalActive ? "text-emerald-500" : "text-gray-400"}>
-                          {pg.doneCount}/{pg.totalActive}
-                        </span>
-                      )}
-                    </div>
-                  </button>
+                {[
+                  { label: "Foundation", passes: ["p1", "p8"] },
+                  { label: "Market & customers", passes: ["p2", "p3", "p4"] },
+                  { label: "Strategy", passes: ["p5", "p6"] },
+                  { label: "Synthesis", passes: ["p7", "p9"] },
+                ].map(g => (
+                  <div key={g.label} className="pt-3">
+                    <div className="px-3 pb-1 text-[11px] uppercase tracking-wide text-gray-500">{g.label}</div>
+                    {g.passes.map(pid => {
+                      const pg = passGroups.find(p => p.id === pid);
+                      if (!pg) return null;
+                      const stale = pg.methods.some(m => staleMap[m.id]);
+                      const running = pg.methods.some(m => methodStatus[m.id] === "extracting" || methodStatus[m.id] === "executing");
+                      return (
+                        <button key={pg.id} onClick={() => { setActivePass(pg.id); setFocusMethodId(null); setMobileNav(false); }}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors ${activePass === pg.id ? "bg-blue-50 text-blue-800 font-medium" : "text-gray-700 hover:bg-gray-50"} ${pg.totalActive === 0 ? "opacity-50" : ""}`}>
+                          <span className={`w-[18px] flex justify-center ${running ? "animate-pulse" : ""}`}>
+                            <ProgressRing value={pg.doneCount} total={pg.totalActive} color={passColor(pg, methodStatus, stale)} label={`${pg.title}: ${pg.doneCount} of ${pg.totalActive} approved`} />
+                          </span>
+                          <span className="flex-1 truncate">{pg.title}</span>
+                          {stale && <span className="w-1.5 h-1.5 rounded-full bg-orange-500" title="An upstream analysis changed" />}
+                          <span className="text-xs text-gray-500 tabular-nums">{pg.totalActive ? `${pg.doneCount}/${pg.totalActive}` : "–"}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 ))}
-              </div>
+              </nav>
 
               {/* Main panel */}
               <div className="flex-1 overflow-y-auto p-4">
@@ -1366,6 +1448,13 @@ ${passChapters}
                     <AlertTriangle size={13} className="text-red-600 mt-0.5 flex-shrink-0" />
                     <p className="text-xs text-red-700">{error}</p>
                   </div>
+                )}
+
+                {/* Overview */}
+                {activePass === "overview" && p0 && (
+                  <DealOverview p0={p0} exec={docState.execSummary} snapshots={snapshots} passGroups={passGroups}
+                    methodStatus={methodStatus} staleMap={staleMap} progress={progress} next={next} onNext={onNextStep}
+                    onNavigate={(pid) => setActivePass(pid)} founderAnswers={founderAnswers} revisionCount={revisionTriggers.length} />
                 )}
 
                 {/* P0 View */}
@@ -1622,9 +1711,13 @@ ${passChapters}
                           <h2 className="text-sm font-semibold">P{pg.num} · {pg.title}</h2>
                           <p className="text-xs text-gray-400">{pg.doneCount}/{pg.totalActive} complete</p>
                         </div>
-                        <button onClick={() => pg.methods.filter(m => m.decision !== "skip" && methodStatus[m.id] !== "extracting" && methodStatus[m.id] !== "executing").forEach(m => runExtract(m.id))}
-                          className="text-xs px-3 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-1.5">
-                          <Filter size={11} /> Extract all
+                        <button onClick={async () => {
+                            const todo = pg.methods.filter(m => m.decision !== "skip" && !["done", "review", "extracting", "executing"].includes(methodStatus[m.id]));
+                            for (const m of todo) await queueRun(m.id, methodStatus[m.id] === "extracted" ? "execute" : "run", methodNotes[m.id] || "");
+                            toast(todo.length ? `Queued ${todo.length} in ${pg.title}.` : "Nothing left to run in this pass.", todo.length ? "success" : "info");
+                          }}
+                          className="text-xs px-3 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-1.5">
+                          <Play size={11} /> Run all in this pass
                         </button>
                       </div>
                       <PassSummaryCard
@@ -1645,6 +1738,9 @@ ${passChapters}
                           summary={methodSummaries[m.id]}
                           notes={methodNotes[m.id]}
                           projectId={activeId}
+                          focused={focusMethodId === m.id}
+                          onCancel={() => cancelRun(m.id)}
+                          startedAt={runStartedAt[m.id]}
                           commentCount={commentCounts[m.id] || 0}
                           onCommentsChanged={() => refreshComments(activeId)}
                           runVersion={runVersions.current[m.id]}
@@ -1652,6 +1748,7 @@ ${passChapters}
                           onRestored={() => syncRuns(activeId, { full: true })}
                           loading={!!methodLoading[m.id] || methodStatus[m.id] === "extracting" || methodStatus[m.id] === "executing"}
                           onRunExtract={() => runExtract(m.id)}
+                          onRunAll={() => queueRun(m.id, methodStatus[m.id] === "extracted" ? "execute" : "run", methodNotes[m.id] || "")}
                           onRunExecute={() => runExecute(m.id)}
                           onApprove={() => approveMethod(m.id)}
                           onRerun={() => runRerun(m.id)}
@@ -1687,4 +1784,8 @@ ${passChapters}
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </div>
   );
+}
+
+export default function Page() {
+  return <ToastProvider><PageInner /></ToastProvider>;
 }

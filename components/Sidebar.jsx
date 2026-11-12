@@ -1,6 +1,9 @@
 "use client";
 import { Plus, Trash2, FileText, Lightbulb, Layers, Settings, LogOut, BarChart3, Users } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
+import { Search } from "lucide-react";
+import { scoreBand } from "@/components/ui";
 import { useUser, useClerk, OrganizationSwitcher } from "@clerk/nextjs";
 
 function timeAgo(ts) {
@@ -21,6 +24,13 @@ const STATUS_DOT = {
 export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete, onSettings }) {
   const { user } = useUser();
   const { signOut } = useClerk();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all"); // all | mine | shared
+  const anyShared = projects.some(p => p.shared);
+  const shown = projects.filter(p =>
+    (!query || p.name.toLowerCase().includes(query.toLowerCase())) &&
+    (filter === "all" || (filter === "mine" ? p.is_owner !== false : p.shared))
+  );
 
   return (
     <aside className="w-56 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0">
@@ -54,12 +64,32 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
         </button>
       </div>
 
+      {/* Search + filter */}
+      {projects.length > 3 && (
+        <div className="px-3 pt-2.5 pb-1 space-y-1.5">
+          <label className="flex items-center gap-1.5 px-2 py-1.5 border border-gray-200 rounded-lg focus-within:border-blue-400">
+            <Search size={12} className="text-gray-500" />
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search deals" aria-label="Search deals"
+              className="flex-1 text-xs outline-none bg-transparent text-gray-800 placeholder-gray-500" />
+          </label>
+          {anyShared && (
+            <div className="flex gap-1 text-[11px]" role="tablist">
+              {[["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => (
+                <button key={k} role="tab" aria-selected={filter === k} onClick={() => setFilter(k)}
+                  className={`px-2 py-0.5 rounded-full ${filter === k ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-100"}`}>{l}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Projects list */}
       <div className="flex-1 overflow-y-auto py-1">
         {projects.length === 0 && (
-          <p className="text-xs text-gray-400 text-center py-8 px-4">No analyses yet.<br />Start one above.</p>
+          <p className="text-xs text-gray-500 text-center py-8 px-4">No analyses yet.<br />Start one above.</p>
         )}
-        {projects.map(p => (
+        {projects.length > 0 && shown.length === 0 && <p className="text-xs text-gray-500 text-center py-6 px-4">No deals match.</p>}
+        {shown.map(p => (
           <div key={p.id}
             onClick={() => onSelect(p.id)}
             className={`group px-3 py-2.5 cursor-pointer transition-colors flex items-start gap-2.5 ${activeId === p.id ? "bg-blue-50" : "hover:bg-gray-50"}`}>
@@ -69,15 +99,20 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
                 : <FileText   size={12} className={activeId === p.id ? "text-blue-500" : "text-gray-300"} />}
             </div>
             <div className="flex-1 min-w-0">
-              <p className={`text-xs font-medium truncate leading-snug ${activeId === p.id ? "text-blue-700" : "text-gray-800"}`}>
-                {p.name}
-              </p>
+              <div className="flex items-center gap-1.5">
+                <p className={`text-[13px] font-medium truncate leading-snug flex-1 ${activeId === p.id ? "text-blue-800" : "text-gray-900"}`}>
+                  {p.name}
+                </p>
+                {p.score && (
+                  <span title={p.verdict || ""} className={`text-[11px] font-semibold px-1.5 rounded ${scoreBand(Number.parseFloat(p.score)).chip}`}>{Number.parseFloat(p.score).toFixed(1)}</span>
+                )}
+              </div>
               {p.shared && (
                 <p className="flex items-center gap-1 text-[10px] text-gray-400 mt-0.5"><Users size={9} /> {p.is_owner ? "Shared with team" : "Shared with you"}</p>
               )}
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[p.status] || STATUS_DOT.setup}`} />
-                <span className="text-xs text-gray-400">{timeAgo(p.updated_at)}</span>
+                <span className="text-xs text-gray-500">{timeAgo(p.updated_at)}{p.verdict ? ` · ${p.verdict}` : ""}</span>
               </div>
             </div>
             {p.is_owner !== false && (

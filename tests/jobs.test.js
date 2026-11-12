@@ -159,3 +159,18 @@ test("execute without evidence fails cleanly and is retryable", async () => {
   assert.equal(r.status, "error");
   assert.match(r.error, /re-extract/i);
 });
+
+test("run action = extract then execute in one job, ending in review", async () => {
+  mk("p-runall");
+  db.updateProject("p-runall", "u1", { state: { corpusText: "deck", entities: {}, p0: { venture_name: "Acme" } } });
+  jobs.configureWorker({ handlers });
+  const seen = stubAnthropic((body) => body.system.includes("evidence retrieval specialist")
+    ? '{"methodology":"team_assessment","evidence_quality":"low","extracted_evidence":[],"gaps":[],"conflicts":[]}'
+    : "## Analysis\\nok");
+  jobs.submitJob({ projectId: "p-runall", userId: "u1", methodId: "team_assessment", action: "run" });
+  await jobs.whenIdle();
+  const r = runs.getRun("p-runall", "team_assessment");
+  assert.equal(r.status, "review");
+  assert.ok(r.evidence && r.result);
+  assert.equal(seen.length, 2, "one extract call + one execute call");
+});

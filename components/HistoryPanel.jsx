@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
 import { History, RotateCcw, Loader } from "lucide-react";
-import { lineDiff, diffStats } from "@/lib/diff";
+import { lineDiff, diffStats, prettyMarkdownLine } from "@/lib/diff";
+import CitedMarkdown from "@/components/CitedMarkdown";
 
 const KIND = { execute: "First analysis", revise: "Revision", restore: "Restored" };
 
@@ -13,6 +14,7 @@ export default function HistoryPanel({ projectId, methodId, currentResult, versi
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [view, setView] = useState("changes"); // "changes" | "side"
 
   useEffect(() => {
     if (!open || !projectId) return;
@@ -53,7 +55,7 @@ export default function HistoryPanel({ projectId, methodId, currentResult, versi
           {!versions && <div className="p-3 flex justify-center"><Loader size={12} className="animate-spin text-gray-400" /></div>}
           {versions?.length === 0 && <p className="p-3 text-xs text-gray-400">No saved versions yet.</p>}
           {versions?.length > 0 && (
-            <div className="flex divide-x divide-gray-100 max-h-72">
+            <div className="flex divide-x divide-gray-100 max-h-[28rem]">
               <ul className="w-44 flex-shrink-0 overflow-y-auto">
                 {versions.map((v, i) => (
                   <li key={v.id}>
@@ -70,19 +72,43 @@ export default function HistoryPanel({ projectId, methodId, currentResult, versi
                 {sel && (
                   <>
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs text-gray-500">vs current: <span className="text-emerald-700">+{stats.added}</span> / <span className="text-red-600">−{stats.removed}</span> lines</span>
+                      <span className="text-xs text-gray-600">vs current: <span className="text-emerald-700">+{stats.added}</span> / <span className="text-red-600">−{stats.removed}</span> lines</span>
+                      <div className="flex rounded-md border border-gray-200 overflow-hidden text-xs" role="tablist">
+                        {[["changes", "Changes"], ["side", "Side by side"]].map(([k, l]) => (
+                          <button key={k} role="tab" aria-selected={view === k} onClick={() => setView(k)}
+                            className={`px-2 py-0.5 ${view === k ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-50"}`}>{l}</button>
+                        ))}
+                      </div>
                       <button onClick={restore} disabled={busy || sel.result === currentResult}
                         className="ml-auto text-xs px-2 py-0.5 border border-gray-200 rounded-md hover:bg-gray-50 text-gray-600 disabled:opacity-40 flex items-center gap-1">
                         {busy ? <Loader size={10} className="animate-spin" /> : <RotateCcw size={10} />} Restore this version
                       </button>
                     </div>
-                    <pre className="text-xs font-sans whitespace-pre-wrap leading-relaxed">
-                      {diff.map((d, i) => (
-                        <div key={i} className={d.type === "add" ? "bg-emerald-50 text-emerald-900" : d.type === "del" ? "bg-red-50 text-red-800 line-through decoration-red-300" : "text-gray-500"}>
-                          {d.type === "add" ? "+ " : d.type === "del" ? "− " : "  "}{d.text}
-                        </div>
-                      ))}
-                    </pre>
+                    {view === "changes" ? (
+                      <div className="text-[13px] leading-relaxed">
+                        {diff.map((d, i) => {
+                          const text = prettyMarkdownLine(d.text);
+                          if (text === null) return null;
+                          if (d.type === "same" && !text.trim()) return <div key={i} className="h-2" />;
+                          return (
+                            <div key={i} className={`px-1.5 rounded ${d.type === "add" ? "bg-emerald-50 text-emerald-950" : d.type === "del" ? "bg-red-50 text-red-900 line-through decoration-red-300" : "text-gray-600"}`}>
+                              <span className="inline-block w-3 text-gray-500">{d.type === "add" ? "+" : d.type === "del" ? "−" : ""}</span>{text}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3">
+                        {[["Selected version", sel.result], ["Current", currentResult]].map(([label, md]) => (
+                          <div key={label} className="min-w-0">
+                            <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">{label}</div>
+                            <div className="prose prose-sm max-w-none prose-p:text-xs prose-li:text-xs prose-h2:text-sm prose-table:text-[11px] border border-gray-100 rounded-md p-2">
+                              <CitedMarkdown>{md || ""}</CitedMarkdown>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </>
                 )}
               </div>

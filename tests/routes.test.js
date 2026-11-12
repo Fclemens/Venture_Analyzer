@@ -14,6 +14,7 @@ const jobs = await import("../lib/jobs.js");
 const runsRoute = await import("../app/api/projects/[id]/runs/route.js");
 const sourcesRoute = await import("../app/api/projects/[id]/sources/route.js");
 const projectRoute = await import("../app/api/projects/[id]/route.js");
+const projectsRoute = () => import("../app/api/projects/route.js");
 
 after(() => { jobs.stopWorker(); fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -192,4 +193,24 @@ test("reindex route: auth, ownership, no-op when nothing is stale", async () => 
   const res = await call();
   assert.equal(res.status, 200);
   assert.equal((await res.json()).status, "up-to-date");
+});
+
+test("run (extract+execute) and cancel: queued work can be cancelled and the run returns to a stable state", async () => {
+  as("alice");
+  const res = await post("p1", { action: "run", methodId: "pricing_architecture" });
+  assert.equal(res.status, 202);
+  assert.equal((await res.json()).run.status, "extracting");
+  await jobs.whenIdle();
+  // A job that is still queued (worker busy) can be cancelled
+  jobs.stopWorker();
+  runs.saveRun("p1", "pricing_architecture", { status: "extracting" });
+  runs.enqueueJob({ projectId: "p1", userId: "alice", methodId: "pricing_architecture", action: "run" });
+  const cancel = await post("p1", { action: "cancel", methodId: "pricing_architecture" });
+  assert.equal(cancel.status, 200);
+  assert.equal(runs.getRun("p1", "pricing_architecture").status, "pending");
+  assert.equal(runs.activeJob("p1", "pricing_architecture"), null);
+  assert.equal((await post("p1", { action: "cancel", methodId: "pricing_architecture" })).status, 400, "nothing left to cancel");
+  const list = await (await projectsRoute()).GET();
+  const p = (await list.json()).find(x => x.id === "p1");
+  assert.ok("score" in p && "verdict" in p, "sidebar gets score and verdict");
 });

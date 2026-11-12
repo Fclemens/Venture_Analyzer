@@ -2,11 +2,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Upload, Play, FileText, Lightbulb, Loader, AlertTriangle, Plus, X,
-  Check, ChevronDown, ChevronRight, Download, Filter,
-  RotateCcw, Globe, StickyNote, Search,
+  Check, ChevronDown, ChevronRight,
+  Globe, StickyNote, Search,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import Sidebar from "@/components/Sidebar";
 import SettingsPanel from "@/components/SettingsPanel";
 import MethodCard from "@/components/MethodCard";
@@ -21,6 +19,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
 import DealOverview, { passColor } from "@/components/DealOverview";
+import ReportView from "@/components/ReportView";
 import { ToastProvider, useToast, ProgressRing, Pill } from "@/components/ui";
 import { nextStep, pipelineProgress } from "@/lib/next-step";
 import { LayoutDashboard, Coins, FileStack, Globe2 } from "lucide-react";
@@ -955,6 +954,17 @@ ${passChapters}
     }
   }, [next, runAllRemaining, generateDocument]);
 
+  // Founder Q&A tracked against the report's questions (saved with the deal, debounced)
+  const answersTimer = useRef(null);
+  const updateFounderAnswer = useCallback((question, patch) => {
+    setFounderAnswers(prev => {
+      const next = { ...prev, [question]: { ...prev[question], ...patch } };
+      clearTimeout(answersTimer.current);
+      answersTimer.current = setTimeout(() => activeIdRef.current && saveState(activeIdRef.current, { founderAnswers: next }), 700);
+      return next;
+    });
+  }, [saveState]);
+
   const cancelRun = useCallback(async (methodId) => {
     const res = await fetch(`/api/projects/${activeId}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "cancel", methodId }) });
     const data = await res.json();
@@ -989,8 +999,6 @@ ${passChapters}
     totalActive: methods.filter(m => m.pass === pd.id && m.decision !== "skip").length,
   })), [methods, methodStatus]);
 
-  const totalDone = useMemo(() => Object.values(methodStatus).filter(s => s === "done").length, [methodStatus]);
-  const totalActive = useMemo(() => methods.filter(m => m.decision !== "skip").length, [methods]);
   const canStart = entryMode === "document" ? files.length > 0 : (!!conceptCard.name && !!conceptCard.description);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1138,219 +1146,11 @@ ${passChapters}
           </div>
         )}
 
-        {/* ── OUTPUT SCREEN ── */}
+        {/* ── REPORT SCREEN ── */}
         {screen === "output" && (
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
-            <div className="max-w-3xl mx-auto">
-              {/* Toolbar */}
-              <div className="flex items-center justify-between mb-6">
-                <button onClick={() => setScreen("pipeline")} className="text-sm text-gray-500 hover:text-gray-800 flex items-center gap-1">
-                  <ChevronDown size={14} className="rotate-90" /> Back
-                </button>
-                <div className="flex gap-2">
-                  {!docState.generating && !docState.execSummary && (
-                    <button onClick={generateDocument}
-                      className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-2">
-                      <Play size={13} /> Generate report
-                    </button>
-                  )}
-                  {docState.execSummary && (
-                    <>
-                      <button onClick={generateDocument} disabled={docState.generating}
-                        className="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50 flex items-center gap-1.5 disabled:opacity-40">
-                        <RotateCcw size={13} /> Regenerate
-                      </button>
-                      <button onClick={downloadHTML}
-                        className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-1.5">
-                        <Download size={13} /> HTML
-                      </button>
-                      {[["docx", "Word"], ["xlsx", "Excel model"], ["md", "Markdown"]].map(([fmt, label]) => (
-                        <a key={fmt} href={`/api/projects/${activeId}/export?format=${fmt}${fmt === "docx" ? "&appendix=1" : ""}`} download
-                          className="px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50 flex items-center gap-1.5">
-                          <Download size={13} /> {label}
-                        </a>
-                      ))}
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Generating state */}
-              {docState.generating && (
-                <div className="flex flex-col items-center justify-center py-24 gap-4">
-                  <Loader size={28} className="animate-spin text-gray-400" />
-                  <p className="text-sm text-gray-500">{docState.progress}</p>
-                </div>
-              )}
-
-              {/* Error */}
-              {error && !docState.generating && (
-                <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 flex items-start gap-2">
-                  <AlertTriangle size={13} className="text-red-600 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-red-700">{error}</p>
-                </div>
-              )}
-
-              {/* Empty state */}
-              {!docState.generating && !docState.execSummary && !error && (
-                <div className="text-center py-24 text-gray-400">
-                  <FileText size={32} className="mx-auto mb-3 opacity-30" />
-                  <p className="text-sm">Click Generate report to synthesise all completed passes into a structured document.</p>
-                </div>
-              )}
-
-              {/* Rendered document */}
-              {!docState.generating && docState.execSummary && (() => {
-                const { chapters, execSummary } = docState;
-                return (
-                  <div className="space-y-6">
-                    {/* Cover */}
-                    <div className="bg-white rounded-2xl border border-gray-200 p-6">
-                      <h1 className="text-2xl font-bold text-gray-900 mb-1">{p0?.venture_name || "Venture Analysis"}</h1>
-                      <p className="text-xs text-gray-400 mb-4">
-                        {new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}
-                        {p0?.classification?.business_model && ` · ${p0.classification.business_model.toUpperCase()}`}
-                        {p0?.stage && ` · ${p0.stage}`}
-                        {` · ${Object.keys(chapters).length} passes`}
-                      </p>
-                      <div className="flex items-center gap-3">
-                        <span className="px-3 py-1 bg-gray-900 text-white text-xs font-semibold rounded-full">{execSummary.verdict}</span>
-                        <span className="text-3xl font-bold text-gray-900">{execSummary.score}</span>
-                        {execSummary.score_rationale && <span className="text-xs text-gray-500 flex-1">{execSummary.score_rationale}</span>}
-                      </div>
-                      {execSummary.score_breakdown?.length > 0 && (
-                        <div className="mt-4 border-t border-gray-100 pt-3 space-y-1.5">
-                          {execSummary.score_breakdown.map(d => (
-                            <div key={d.id} className="flex items-start gap-3 text-xs">
-                              <span className="w-40 flex-shrink-0 text-gray-700 font-medium">{d.label} <span className="text-gray-300 font-normal">{Math.round(d.weight * 100)}%</span></span>
-                              <span className={`w-10 flex-shrink-0 font-semibold ${d.score == null ? "text-gray-300" : d.score >= 7 ? "text-emerald-600" : d.score >= 5 ? "text-amber-600" : "text-red-600"}`}>{d.score == null ? "n/a" : d.score}</span>
-                              <span className="text-gray-500 flex-1">{d.evidence?.join("; ")}{d.confidence ? ` (${d.confidence} confidence)` : ""}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Executive summary */}
-                    <div className="bg-white rounded-2xl border border-gray-200 p-6">
-                      <h2 className="text-base font-semibold text-gray-900 mb-3">Executive Summary</h2>
-                      {execSummary.investment_thesis && (
-                        <p className="text-sm text-gray-700 italic border-l-2 border-gray-300 pl-3 mb-4">{execSummary.investment_thesis}</p>
-                      )}
-                      {execSummary.executive_summary && (
-                        <div className="prose prose-sm max-w-none prose-p:text-gray-700 prose-p:leading-relaxed">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{execSummary.executive_summary}</ReactMarkdown>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Key findings + risks side by side */}
-                    {(execSummary.strongest_findings?.length > 0 || execSummary.key_risks?.length > 0) && (
-                      <div className="grid grid-cols-2 gap-4">
-                        {execSummary.strongest_findings?.length > 0 && (
-                          <div className="bg-white rounded-2xl border border-gray-200 p-4">
-                            <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Key Findings</h3>
-                            <ul className="space-y-2">
-                              {execSummary.strongest_findings.map((f, i) => (
-                                <li key={i} className="text-xs text-gray-700 flex gap-2">
-                                  <span className="text-emerald-500 flex-shrink-0 mt-0.5">•</span>{f}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        {execSummary.key_risks?.length > 0 && (
-                          <div className="bg-white rounded-2xl border border-gray-200 p-4">
-                            <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">Key Risks</h3>
-                            <ul className="space-y-2">
-                              {execSummary.key_risks.map((r, i) => (
-                                <li key={i} className="text-xs text-gray-700 flex gap-2">
-                                  <span className="text-red-400 flex-shrink-0 mt-0.5">▲</span>{r}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tensions — collapsible, UI only (not in report download) */}
-                    {execSummary.tensions?.length > 0 && (
-                      <details className="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden group">
-                        <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer select-none list-none text-xs font-semibold text-amber-800 uppercase tracking-wide hover:bg-amber-100 transition-colors">
-                          <span className="flex-shrink-0">⚠</span>
-                          <span>Tensions &amp; Incoherences</span>
-                          <span className="ml-auto text-amber-500 text-[10px] font-normal normal-case tracking-normal">click to expand</span>
-                        </summary>
-                        <ul className="px-4 pb-4 pt-1 space-y-2">
-                          {execSummary.tensions.map((t, i) => (
-                            <li key={i} className="text-xs text-amber-800 flex gap-2">
-                              <span className="flex-shrink-0 mt-0.5">→</span>{t}
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-
-                    {/* Recommendation */}
-                    {execSummary.recommendation && (
-                      <div className="bg-gray-900 text-white rounded-2xl p-5">
-                        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Recommendation</h3>
-                        <p className="text-sm leading-relaxed">{execSummary.recommendation}</p>
-                      </div>
-                    )}
-
-                    {/* Report history: how this deal's score has moved */}
-                    {snapshots.length > 1 && (
-                      <details className="bg-white rounded-2xl border border-gray-200 p-5">
-                        <summary className="text-xs font-semibold uppercase tracking-wide text-gray-500 cursor-pointer">Report history · {snapshots.length} reports</summary>
-                        <table className="w-full text-xs mt-3">
-                          <thead><tr className="text-left text-gray-400"><th className="font-medium pb-1">Generated</th><th className="font-medium pb-1">Verdict</th><th className="font-medium pb-1">Score</th><th className="font-medium pb-1">Change</th><th className="font-medium pb-1">What moved</th></tr></thead>
-                          <tbody>
-                            {snapshots.map((sn, i) => (
-                              <tr key={sn.id} className="border-t border-gray-50">
-                                <td className="py-1.5">{new Date(sn.created_at).toLocaleString()}{i === 0 && <span className="text-gray-400"> · latest</span>}</td>
-                                <td>{sn.verdict}</td>
-                                <td>{sn.score ?? "n/a"}</td>
-                                <td>{sn.delta === null ? "—" : sn.delta === 0 ? "no change" : sn.delta > 0 ? `▲ +${sn.delta}` : `▼ ${sn.delta}`}</td>
-                                <td className="text-gray-500">{sn.dimensionChanges?.map(d => `${d.id.replace("_", " ")} ${d.from ?? "n/a"}→${d.to ?? "n/a"}`).join(", ") || ""}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </details>
-                    )}
-
-                    {/* Questions for the founders */}
-                    {execSummary.founder_questions?.length > 0 && (
-                      <div className="bg-white rounded-2xl border border-gray-200 p-5">
-                        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Questions for the founders</h3>
-                        <ol className="list-decimal pl-5 space-y-1.5 text-sm text-gray-700">
-                          {execSummary.founder_questions.map((q, i) => <li key={i}>{q}</li>)}
-                        </ol>
-                      </div>
-                    )}
-
-                    {/* Chapters */}
-                    {PASS_DEFS.slice(1).filter(pd => chapters[pd.id]).map(pd => (
-                      <div key={pd.id} className="bg-white rounded-2xl border border-gray-200 p-6">
-                        <h2 className="text-base font-semibold text-gray-900 mb-4">P{pd.num} · {pd.title}</h2>
-                        <div className="prose prose-sm max-w-none
-                          prose-headings:font-semibold prose-headings:text-gray-900
-                          prose-h2:text-sm prose-h2:mt-4 prose-h2:mb-2
-                          prose-h3:text-xs prose-h3:uppercase prose-h3:tracking-wide prose-h3:text-gray-500 prose-h3:mt-3
-                          prose-p:text-gray-700 prose-p:leading-relaxed prose-p:text-sm prose-p:my-2
-                          prose-ul:text-sm prose-li:text-gray-700 prose-li:my-1
-                          prose-strong:text-gray-900">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{chapters[pd.id]}</ReactMarkdown>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
+          <ReportView docState={docState} error={error} p0={p0} snapshots={snapshots} reportStale={reportStale} activeId={activeId}
+            founderAnswers={founderAnswers} onAnswer={updateFounderAnswer}
+            onBack={() => setScreen("pipeline")} onGenerate={generateDocument} onDownloadHTML={downloadHTML} />
         )}
 
         {/* ── PIPELINE SCREEN ── */}

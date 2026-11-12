@@ -33,7 +33,7 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
   );
 
   return (
-    <aside className="w-56 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0">
+    <aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-200 flex-col h-screen sticky top-0 print:hidden">
       {/* Logo */}
       <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2.5">
         <div className="w-7 h-7 rounded-lg bg-gray-900 flex items-center justify-center flex-shrink-0">

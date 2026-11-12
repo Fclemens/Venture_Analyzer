@@ -94,3 +94,23 @@ test("describeModel quotes computed numbers", () => {
   assert.equal(describeModel({ ok: false }), "");
   assert.ok(DEFAULT_SCENARIOS.bear.churn > 1);
 });
+
+import { sensitivity, kpiHealth } from "../lib/finmodel.js";
+test("sensitivity: drivers move cash in the expected direction and are ranked by swing", () => {
+  const s = sensitivity(base);
+  const by = Object.fromEntries(s.rows.map(r => [r.id, r]));
+  assert.ok(by.arpa_month.high > 0 && by.arpa_month.low < 0, "higher price → more cash");
+  assert.ok(by.cac.high < 0 && by.cac.low > 0, "higher CAC → less cash");
+  assert.ok(by.monthly_churn_pct.high < 0, "higher churn → less cash");
+  assert.ok(by.fixed_costs_month.high < 0);
+  for (let i = 1; i < s.rows.length; i++) assert.ok(s.rows[i - 1].swing >= s.rows[i].swing, "sorted by swing");
+  assert.ok(!by.new_customers_growth_pct, "a zero-valued driver has no swing and is omitted");
+  assert.equal(sensitivity({}), null, "missing essentials → no sensitivity");
+});
+
+test("kpiHealth benchmarks", () => {
+  assert.equal(kpiHealth({ ltvToCac: 4, paybackMonths: 5 }).ltvToCac.tone, "good");
+  assert.equal(kpiHealth({ ltvToCac: 1.5, paybackMonths: 18 }).payback.tone, "warn");
+  assert.equal(kpiHealth({ ltvToCac: 0.8, paybackMonths: 30 }).ltvToCac.tone, "bad");
+  assert.equal(kpiHealth({ ltvToCac: null }).ltvToCac, null);
+});

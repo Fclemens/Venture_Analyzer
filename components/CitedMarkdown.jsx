@@ -44,7 +44,9 @@ function chip(children, ctx) {
 
 export default function CitedMarkdown({ children, onCite, evidenceIds }) {
   const ctx = { onCite, evidenceIds };
-  const wrap = (Tag) => function Wrapped({ node, children: kids, ...props }) { // eslint-disable-line no-unused-vars
+  const wrap = (Tag) => function Wrapped(allProps) {
+    const { children: kids, ...props } = allProps;
+    delete props.node; // react-markdown's AST node must not reach the DOM
     return <Tag {...props}>{chip(kids, ctx)}</Tag>;
   };
   return (

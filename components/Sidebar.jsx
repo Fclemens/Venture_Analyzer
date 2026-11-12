@@ -21,7 +21,7 @@ const STATUS_DOT = {
   error:    "bg-red-400",
 };
 
-export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete, onSettings }) {
+export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete, onSettings, mobileOpen = false, onCloseMobile }) {
   const { user } = useUser();
   const { signOut } = useClerk();
   const [query, setQuery] = useState("");
@@ -33,7 +33,9 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
   );
 
   return (
-    <aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-200 flex-col h-screen sticky top-0 print:hidden">
+    <>
+    {mobileOpen && <div className="md:hidden fixed inset-0 z-40 bg-black/30" onClick={onCloseMobile} aria-hidden="true" />}
+    <aside className={`${mobileOpen ? "fixed inset-y-0 left-0 z-50 flex shadow-2xl" : "hidden"} md:flex md:sticky md:top-0 w-64 md:w-56 flex-shrink-0 bg-white border-r border-gray-200 flex-col h-screen print:hidden`}>
       {/* Logo */}
       <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2.5">
         <div className="w-7 h-7 rounded-lg bg-gray-900 flex items-center justify-center flex-shrink-0">
@@ -153,5 +155,6 @@ export default function Sidebar({ projects, activeId, onSelect, onNew, onDelete,
         )}
       </div>
     </aside>
+    </>
   );
 }

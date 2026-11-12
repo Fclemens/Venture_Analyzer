@@ -9,8 +9,10 @@ import Sidebar from "@/components/Sidebar";
 import SettingsPanel from "@/components/SettingsPanel";
 import MethodCard from "@/components/MethodCard";
 import PassSummaryCard from "@/components/PassSummaryCard";
-import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP } from "@/lib/constants";
+import { PASS_DEFS, DEPENDENCIES, SKETCH_PASSES, PRIORITY_FOCUS_MAP, PROVIDERS } from "@/lib/constants";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
+const METHOD_COUNT_FULL = Object.keys(METHODOLOGY_REGISTRY).length;
+const METHOD_COUNT_SKETCH = Object.values(METHODOLOGY_REGISTRY).filter(m => SKETCH_PASSES.includes(m.pass)).length;
 import { escapeHtml as esc } from "@/lib/security-client";
 import { staleDependents } from "@/lib/staleness";
 import { UPLOAD_PATTERN, ACCEPT_ATTR, typeOf } from "@/lib/filetypes";
@@ -20,6 +22,7 @@ import { Users } from "lucide-react";
 import FinancialModel from "@/components/FinancialModel";
 import DealOverview, { passColor } from "@/components/DealOverview";
 import ReportView from "@/components/ReportView";
+import ActivityFeed from "@/components/ActivityFeed";
 import { ToastProvider, useToast, ProgressRing, Pill } from "@/components/ui";
 import { nextStep, pipelineProgress } from "@/lib/next-step";
 import { LayoutDashboard, Coins, FileStack, Globe2 } from "lucide-react";
@@ -178,6 +181,19 @@ function PageInner() {
   const [founderAnswers, setFounderAnswers] = useState({}); // { question text: { asked, answer } }
   const [focusMethodId, setFocusMethodId] = useState(null);
   const [mobileNav, setMobileNav] = useState(false);
+  const [dealsOpen, setDealsOpen] = useState(false);
+  const [keyStatus, setKeyStatus] = useState(null); // { ok, missing: [provider names] }
+  useEffect(() => {
+    if (screen !== "setup" || settingsOpen) return;
+    let off = false;
+    fetch("/api/settings").then(r => r.ok ? r.json() : null).then(st => {
+      if (off || !st) return;
+      const needed = [...new Set(["fast", "smart"].map(r => st.roles?.[r]?.provider).filter(Boolean))];
+      const missing = needed.filter(p => !st.providers?.[p]?.apiKey);
+      setKeyStatus({ ok: missing.length === 0, missing: missing.map(p => PROVIDERS[p]?.name || p) });
+    }).catch(() => {});
+    return () => { off = true; };
+  }, [screen, settingsOpen]);
   const [runStartedAt, setRunStartedAt] = useState({}); // methodId → when its current step started (for the elapsed timer)
   const [finModel, setFinModel] = useState(null);       // { currency, assumptions, scenarios } — inputs only; results are computed
   const [finProposing, setFinProposing] = useState(false);
@@ -1006,7 +1022,10 @@ ${passChapters}
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
-      <Sidebar projects={projects} activeId={activeId} onSelect={handleSelectProject} onNew={handleNewProject} onDelete={handleDeleteProject} onSettings={() => setSettingsOpen(true)} />
+      <Sidebar projects={projects} activeId={activeId} onSelect={(id) => { setDealsOpen(false); handleSelectProject(id); }} onNew={() => { setDealsOpen(false); handleNewProject(); }}
+        onDelete={handleDeleteProject} onSettings={() => { setDealsOpen(false); setSettingsOpen(true); }} mobileOpen={dealsOpen} onCloseMobile={() => setDealsOpen(false)} />
+      {/* Phones: the deal list is a drawer opened from this button */}
+      <button onClick={() => setDealsOpen(true)} className="md:hidden fixed bottom-4 left-4 z-30 px-3.5 py-2 rounded-full bg-gray-900 text-white text-sm shadow-lg print:hidden">☰ Deals</button>
 
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -1121,11 +1140,20 @@ ${passChapters}
                   </div>
                 </div>
 
+                {/* API key onboarding: say why Start is unavailable instead of silently disabling it */}
+                {keyStatus && !keyStatus.ok && (
+                  <div className="flex items-start gap-2.5 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-900">
+                    <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+                    <span className="flex-1">Add an API key for <b>{keyStatus.missing.join(" and ")}</b> to run analyses. Keys are stored encrypted and used only for your requests.</span>
+                    <button onClick={() => setSettingsOpen(true)} className="text-xs px-2.5 py-1.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 whitespace-nowrap">Open settings</button>
+                  </div>
+                )}
+
                 {/* Pipeline depth */}
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">Pipeline depth</label>
                   <div className="flex gap-2">
-                    {[["full","Full","All passes · ~30–60 min"],["sketch","Sketch","P0+P2+P3+P4 · ~10 min"]].map(([v,l,hint]) => (
+                    {[["full","Full","Every relevant analysis"],["sketch","Sketch","Market, competition and demand only"]].map(([v,l,hint]) => (
                       <button key={v} onClick={() => setPipelineMode(v)}
                         className={`flex-1 text-xs py-2.5 rounded-xl border transition-all ${pipelineMode === v ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"}`}>
                         <div className="font-medium">{l}</div>
@@ -1133,11 +1161,17 @@ ${passChapters}
                       </button>
                     ))}
                   </div>
+                  <p className="text-xs text-gray-600 mt-2" title="Rough estimate; the scoping step decides the exact set of analyses">
+                    {(() => {
+                      const n = pipelineMode === "sketch" ? METHOD_COUNT_SKETCH : METHOD_COUNT_FULL;
+                      return `≈ ${n} analyses · about ${Math.round(n * 1.6 / 2)}–${Math.round(n * 2.6 / 2)} min in the background · roughly ${(n * 0.035).toFixed(1)}M tokens (estimate)`;
+                    })()}
+                  </p>
                 </div>
 
                 {error && <div className="flex items-start gap-2 p-3 bg-red-50 rounded-lg text-xs text-red-700"><AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />{error}</div>}
 
-                <button onClick={startAnalysis} disabled={!canStart || loading}
+                <button onClick={startAnalysis} disabled={!canStart || loading || (keyStatus && !keyStatus.ok)}
                   className="w-full py-3 bg-gray-900 text-white rounded-xl text-sm font-medium hover:bg-gray-700 disabled:opacity-40 flex items-center justify-center gap-2">
                   {loading ? <><Loader size={15} className="animate-spin" /> {loadingMsg}</> : <><Play size={15} /> {entryMode === "concept" ? "Research & analyze" : "Start analysis"}</>}
                 </button>
@@ -1254,7 +1288,8 @@ ${passChapters}
                 {activePass === "overview" && p0 && (
                   <DealOverview p0={p0} exec={docState.execSummary} snapshots={snapshots} passGroups={passGroups}
                     methodStatus={methodStatus} staleMap={staleMap} progress={progress} next={next} onNext={onNextStep}
-                    onNavigate={(pid) => setActivePass(pid)} founderAnswers={founderAnswers} revisionCount={revisionTriggers.length} />
+                    onNavigate={(pid) => setActivePass(pid)} founderAnswers={founderAnswers} revisionCount={revisionTriggers.length}
+                    activity={<ActivityFeed projectId={activeId} refreshKey={`${progress.done}-${progress.review}-${snapshots.length}-${commentCounts._project || 0}`} />} />
                 )}
 
                 {/* P0 View */}
@@ -1303,14 +1338,18 @@ ${passChapters}
 
                     <div className="bg-white rounded-xl border border-gray-200 p-4">
                       <h2 className="text-sm font-semibold mb-2">Stakeholder hypothesis</h2>
-                      <div className="grid grid-cols-5 gap-2">
-                        {Object.entries(p0.stakeholder_hypothesis || {}).map(([k, v]) => (
-                          <div key={k} className="bg-gray-50 rounded-lg px-3 py-2">
-                            <p className="text-xs text-gray-400">{k}</p>
-                            <p className="text-xs font-medium text-gray-800">{v}</p>
-                          </div>
-                        ))}
-                      </div>
+                      {Object.values(p0.stakeholder_hypothesis || {}).some(v => v) ? (
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                          {Object.entries(p0.stakeholder_hypothesis || {}).map(([k, v]) => (
+                            <div key={k} className="bg-gray-50 rounded-lg px-3 py-2">
+                              <p className="text-xs text-gray-500 capitalize">{k}</p>
+                              <p className="text-xs font-medium text-gray-800">{v || <span className="text-gray-400 font-normal">not identified</span>}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-500">Not identified from the materials yet. The Stakeholder deep map analysis maps who decides, uses, pays, influences and blocks.</p>
+                      )}
                     </div>
 
                     {entities && (

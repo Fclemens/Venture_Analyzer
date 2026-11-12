@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { MessageSquare, Send, Trash2, Loader } from "lucide-react";
+import { MessageSquare, Send, Trash2, Loader, CheckCircle2 } from "lucide-react";
 
 // Team discussion. methodId = null → about the whole deal.
 export default function CommentsPanel({ projectId, methodId = null, count = 0, onChanged, label = "Comments" }) {
@@ -9,6 +9,7 @@ export default function CommentsPanel({ projectId, methodId = null, count = 0, o
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [showResolved, setShowResolved] = useState(false);
   const qs = `?method=${methodId || ""}`;
 
   const load = useCallback(async () => {
@@ -35,6 +36,11 @@ export default function CommentsPanel({ projectId, methodId = null, count = 0, o
     setBusy(false);
   };
 
+  const resolve = async (id, resolved) => {
+    const res = await fetch(`/api/projects/${projectId}/comments`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, resolved }) });
+    if (res.ok) { await load(); onChanged?.(); }
+  };
+
   const remove = async (id) => {
     const res = await fetch(`/api/projects/${projectId}/comments?id=${id}`, { method: "DELETE" });
     if (res.ok) { await load(); onChanged?.(); }
@@ -49,12 +55,19 @@ export default function CommentsPanel({ projectId, methodId = null, count = 0, o
         <div className="mt-1.5 border border-gray-200 rounded-lg bg-white p-2.5 space-y-2">
           {!comments && <div className="flex justify-center"><Loader size={12} className="animate-spin text-gray-400" /></div>}
           {comments?.length === 0 && <p className="text-xs text-gray-400">No comments yet.</p>}
-          {comments?.map(c => (
-            <div key={c.id} className="text-xs">
+          {comments?.some(c => c.resolved_at) && (
+            <button onClick={() => setShowResolved(v => !v)} className="text-[11px] text-gray-500 hover:text-gray-800 underline">
+              {showResolved ? "Hide" : "Show"} {comments.filter(c => c.resolved_at).length} resolved
+            </button>
+          )}
+          {comments?.filter(c => showResolved || !c.resolved_at).map(c => (
+            <div key={c.id} className={`text-xs ${c.resolved_at ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-2">
                 <span className="font-medium text-gray-800">{c.author_name}</span>
                 <span className="text-gray-400">{new Date(c.created_at).toLocaleString()}</span>
-                {c.mine && <button onClick={() => remove(c.id)} aria-label="Delete comment" className="ml-auto text-gray-300 hover:text-red-400"><Trash2 size={10} /></button>}
+                <button onClick={() => resolve(c.id, !c.resolved_at)} className={`ml-auto inline-flex items-center gap-0.5 ${c.resolved_at ? "text-emerald-700" : "text-gray-500 hover:text-emerald-700"}`}
+                  title={c.resolved_at ? "Reopen" : "Mark resolved"}><CheckCircle2 size={11} /> {c.resolved_at ? "resolved" : "resolve"}</button>
+                {c.mine && <button onClick={() => remove(c.id)} aria-label="Delete comment" className="text-gray-400 hover:text-red-500"><Trash2 size={10} /></button>}
               </div>
               <p className="text-gray-700 whitespace-pre-wrap">{c.body}</p>
             </div>

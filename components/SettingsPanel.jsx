@@ -169,6 +169,19 @@ export default function SettingsPanel({ onClose }) {
           {/* ── Model Roles ── */}
           <section>
             <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Model roles</h3>
+            <div className="flex gap-1.5 mb-3" role="group" aria-label="Model presets">
+              {[
+                ["Cheapest", { fast: "claude-haiku-5-5", smart: "claude-haiku-5-5", doc_chapter: "claude-haiku-5-5", doc_exec: "claude-sonnet-5-5" }],
+                ["Balanced", { fast: "claude-haiku-5-5", smart: "claude-sonnet-5-5", doc_chapter: "claude-sonnet-5-5", doc_exec: "claude-sonnet-5-5" }],
+                ["Best quality", { fast: "claude-sonnet-5-5", smart: "claude-opus-5-5", doc_chapter: "claude-sonnet-5-5", doc_exec: "claude-opus-5-5" }],
+              ].map(([label, preset]) => {
+                const active = Object.entries(preset).every(([r, m]) => settings.roles[r]?.provider === "anthropic" && settings.roles[r]?.model === m);
+                return (
+                  <button key={label} onClick={() => setSettings(s => ({ ...s, roles: Object.fromEntries(Object.entries(preset).map(([r, m]) => [r, { provider: "anthropic", model: m }])) }))}
+                    className={`text-xs px-2.5 py-1 rounded-full border ${active ? "bg-gray-900 text-white border-gray-900" : "border-gray-200 text-gray-700 hover:bg-gray-50"}`}>{label}</button>
+                );
+              })}
+            </div>
             <p className="text-xs text-gray-500 mb-3">Assign which provider + model handles each role in the pipeline.</p>
             <div className="space-y-4">
               {[

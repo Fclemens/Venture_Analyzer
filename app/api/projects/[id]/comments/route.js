@@ -3,7 +3,7 @@ import { auth, clerkClient } from "@clerk/nextjs/server";
 import { authorizeProject } from "@/lib/access";
 import { rateLimit } from "@/lib/security";
 import { METHODOLOGY_REGISTRY } from "@/lib/registry";
-import { addComment, listComments, deleteComment, commentCounts } from "@/lib/runs";
+import { addComment, listComments, deleteComment, commentCounts, setCommentResolved } from "@/lib/runs";
 
 // Look the author's name up server-side: it is shown to teammates, so it must
 // not be something the browser can set.
@@ -57,6 +57,19 @@ export async function DELETE(request, { params }) {
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!deleteComment(a.projectId, id, a.userId)) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// PATCH { id, resolved } — any member of the deal can resolve or reopen a comment
+export async function PATCH(request, { params }) {
+  try {
+    const a = await authorizeProject(params);
+    if (a.error) return a.error;
+    const { id, resolved } = await request.json();
+    if (!setCommentResolved(a.projectId, Number(id), a.userId, !!resolved)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json({ ok: true, counts: commentCounts(a.projectId) });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

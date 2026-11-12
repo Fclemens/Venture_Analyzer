@@ -18,6 +18,7 @@ const runsRoute = await import("../app/api/projects/[id]/runs/route.js");
 const commentsRoute = await import("../app/api/projects/[id]/comments/route.js");
 const exportRoute = await import("../app/api/projects/[id]/export/route.js");
 const compareRoute = await import("../app/api/compare/route.js");
+const setOrg = (id, owner, org) => db.setProjectOrg(id, owner, org);
 
 after(() => { jobs.stopWorker(); fs.rmSync(dir, { recursive: true, force: true }); });
 const realFetch = globalThis.fetch;
@@ -152,4 +153,43 @@ test("unsharing revokes access immediately; deleting the owner's account removes
   db.deleteUserData("alice");
   assert.equal(db.getProjectById("deal"), null);
   assert.equal(runs.listComments("deal").length, 0);
+});
+
+test("activity feed: who ran, approved, commented and reported - names resolved, ids hidden, strangers 404", async () => {
+  const activity = await import("../app/api/projects/[id]/activity/route.js");
+  db.createProject({ id: "act", name: "act", userId: "alice" });
+  setOrg("act", "alice", "orgA");
+  const ctxA = { params: Promise.resolve({ id: "act" }) };
+  runs.saveRun("act", "team_assessment", { status: "review", result: "r" });
+  const jid = runs.enqueueJob({ projectId: "act", userId: "bob", methodId: "team_assessment", action: "execute" });
+  runs.finishJob(jid);
+  runs.recordEvent("act", "alice", "approve", "team_assessment");
+  runs.addComment({ projectId: "act", methodId: null, userId: "bob", authorName: "Bob Member", body: "Looks good" });
+  runs.insertSnapshot("act", { verdict: "Invest", score: "7.6/10" });
+
+  as("alice", "orgA");
+  const items = (await (await activity.GET(new Request("http://x/a"), ctxA)).json()).items;
+  const kinds = items.map(i => i.type);
+  for (const k of ["job_done", "approve", "comment", "report"]) assert.ok(kinds.includes(k), k);
+  assert.equal(items.find(i => i.type === "job_done").who, "Bob Member", "teammate name from the identity provider");
+  assert.equal(items.find(i => i.type === "approve").who, "You");
+  assert.equal(items.find(i => i.type === "approve").method, "Team assessment");
+  assert.ok(items.every(i => !("user_id" in i)), "user ids are not exposed");
+  as("carol", "orgB");
+  assert.equal((await activity.GET(new Request("http://x/a"), ctxA)).status, 404);
+});
+
+test("comments can be resolved by any member; counts only include open ones", async () => {
+  db.createProject({ id: "res", name: "res", userId: "alice" });
+  setOrg("res", "alice", "orgA");
+  const ctxR = { params: Promise.resolve({ id: "res" }) };
+  const cid = runs.addComment({ projectId: "res", methodId: null, userId: "alice", authorName: "Alice", body: "Open question" });
+  assert.deepEqual(runs.commentCounts("res"), { _project: 1 });
+  as("bob", "orgA");
+  const r = await commentsRoute.PATCH(new Request("http://x/c", { method: "PATCH", body: JSON.stringify({ id: cid, resolved: true }) }), ctxR);
+  assert.equal(r.status, 200);
+  assert.deepEqual((await r.json()).counts, {});
+  assert.ok(runs.listComments("res")[0].resolved_at > 0);
+  as("carol", "orgB");
+  assert.equal((await commentsRoute.PATCH(new Request("http://x/c", { method: "PATCH", body: JSON.stringify({ id: cid, resolved: false }) }), ctxR)).status, 404);
 });

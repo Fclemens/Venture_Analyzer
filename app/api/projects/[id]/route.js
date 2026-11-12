@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { updateProject, deleteProject, setProjectOrg } from "@/lib/db";
-import { loadProjectForClient } from "@/lib/runs";
+import { loadProjectForClient, recordEvent } from "@/lib/runs";
 import { authorizeProject } from "@/lib/access";
 
 export async function GET(_, { params }) {
@@ -27,6 +27,7 @@ export async function PUT(request, { params }) {
       if (a.role !== "owner") return NextResponse.json({ error: "Only the owner can change sharing" }, { status: 403 });
       if (body.shared && !a.orgId) return NextResponse.json({ error: "Select an organization first to share this deal with your team" }, { status: 400 });
       setProjectOrg(a.projectId, a.userId, body.shared ? a.orgId : null);
+      recordEvent(a.projectId, a.userId, body.shared ? "share" : "unshare");
     }
     const project = updateProject(a.projectId, a.userId, body, a.orgId);
     if (!project) return NextResponse.json({ error: "Not found" }, { status: 404 });

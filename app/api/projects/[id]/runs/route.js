@@ -4,7 +4,7 @@ import { METHODOLOGY_REGISTRY } from "@/lib/registry";
 import { rateLimit } from "@/lib/security";
 import { ensureWorker, submitJob } from "@/lib/jobs";
 import {
-  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts, projectUsage, cancelQueuedJob, activeJob,
+  getRun, listRuns, saveRun, chunkStats, listWebSources, listVersions, getVersion, appendVersion, jobCounts, projectUsage, cancelQueuedJob, activeJob, recordEvent,
 } from "@/lib/runs";
 
 // Method runs are queued server-side. The browser enqueues work and polls;
@@ -63,7 +63,9 @@ export async function POST(request, { params }) {
     if (action === "approve") {
       if (!run?.result) return NextResponse.json({ error: "Nothing to approve yet" }, { status: 400 });
       if (run.status === "extracting" || run.status === "executing") return NextResponse.json({ error: "Method is still running" }, { status: 409 });
-      return NextResponse.json({ run: saveRun(a.projectId, methodId, { status: "done", error: null }) });
+      const approved = saveRun(a.projectId, methodId, { status: "done", error: null });
+      recordEvent(a.projectId, a.userId, "approve", methodId);
+      return NextResponse.json({ run: approved });
     }
     if (action === "cancel") {
       if (cancelQueuedJob(a.projectId, methodId)) return NextResponse.json({ run: getRun(a.projectId, methodId, { full: false }) });
@@ -76,6 +78,7 @@ export async function POST(request, { params }) {
       if (!v) return NextResponse.json({ error: "Version not found" }, { status: 404 });
       // Restoring is itself recorded, so nothing is ever lost
       appendVersion(a.projectId, methodId, "restore", v.result);
+      recordEvent(a.projectId, a.userId, "restore", methodId);
       return NextResponse.json({ run: saveRun(a.projectId, methodId, { status: "review", result: v.result, error: null }) });
     }
     if (action === "execute" && !run?.evidence) {
